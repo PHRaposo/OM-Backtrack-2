@@ -1,0 +1,4 @@
+; OM File Header - Saved 2024/12/30 09:33:00
+; (7.04 :patc (om-make-point 226 10) (om-make-point 112 72) (om-make-point 555 347) "" 183 0 nil "2024/12/30 09:33:00")
+; End File Header
+(in-package :om)(load-lib-for (quote nil))(setf *om-current-persistent* (om-load-patch1 "05-for-effects-local-and-global" (quote ((let ((box (om-load-boxcomment "comment" (om-make-point 425 187) (quote "UNDER CONSTRUCTION$$The following Screamer macros has not implemented yet:$$- LOCAL$$- GLOBAL$  $$") "" (om-make-point 63 13) nil (om-make-color 0 0 0) (om-make-font "Verdana" 14.0D0 :family "Verdana" :style (quote (:plain)) :mode (quote nil))))) (when (fboundp (quote set-active)) (set-active box nil)) box))) (quote nil) nil 7.04))
