@@ -39,9 +39,9 @@
                          (om::om-relative-path '("sources" "screamer 4.0.0") "screamer")
                          (om::om-relative-path '("sources") "screaminterface") 					 
                          (om::om-relative-path '("sources") "screamer-additions")						 					 						 				 					  
-			             (om::om-relative-path '("sources") "screamboxes")
+			 (om::om-relative-path '("sources") "screamboxes")
                          (om::om-relative-path '("sources") "screamfuns")		 					 
-			             (om::om-relative-path '("sources") "non-deter-patch")								  							 
+			 (om::om-relative-path '("sources") "non-deter-patch")								  							 
                           ))
 						 
 ;--------------------------------------------------
