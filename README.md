@@ -86,4 +86,4 @@ OM-BACKTRACK SCREENSHOT:
 
 ![alt text](https://github.com/PHRaposo/OM-Backtrack/blob/ac079e9583c2e95b70e063da8270ba6494738ff5/screenshot.png)
 
-# [Download]()
+# [Download](https://github.com/PHRaposo/OM-Backtrack-2.0/archive/refs/heads/main.zip)
