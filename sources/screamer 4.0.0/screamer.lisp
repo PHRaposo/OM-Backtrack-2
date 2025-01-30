@@ -3417,22 +3417,23 @@ Otherwise returns the value of X."
 
  (defun attach-dependencies!-internal (dependencies x)
    ;; NOTE: Will loop if X is circular.
-   (typecase dependencies
-     ;; NOTE: test to avoid loop!
+   (typecase x
      (null nil)
      (cons
-      (attach-dependencies!-internal (car dependencies) x)
-      (attach-dependencies!-internal (cdr dependencies) x))
+      (attach-dependencies!-internal dependencies (car x))
+      (attach-dependencies!-internal dependencies (cdr x)))
 	 (variable
-       (unless (or (not (variable? x))
-	               (eql dependencies x)
-		           (member dependencies (variable-dependencies x) :test #'eq))
-        (setf (variable-dependencies x)
-		 (cons dependencies (variable-dependencies x)))))))
+	   (dolist (dep dependencies)
+               (unless (or (not (variable? dep))
+	               (eql dep x)
+		       (member dep (variable-dependencies x) :test #'eq))
+                 (setf (variable-dependencies x)
+		 (cons dep (variable-dependencies x))))))))
 
 (defun attach-noticer!-internal (noticer x)
   ;; note: Will loop if X is circular.
   (typecase x
+    (null nil)
     (cons (attach-noticer!-internal noticer (car x))
           (attach-noticer!-internal noticer (cdr x)))
     (variable (if (eq x (variable-value x))
