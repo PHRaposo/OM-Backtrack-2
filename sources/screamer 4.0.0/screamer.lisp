@@ -5861,6 +5861,7 @@ restricted to be consistent with other arguments."
     (if (every #'bound? x)
         (apply f (mapcar #'value-of x))
         (let ((z (make-variable)))
+          (attach-noticer! nil z :dependencies (variables-in x))
           (assert!-constraint
            #'(lambda (&rest x) (equal (first x) (apply f (rest x)))) t (cons z x))
           (dolist (argument x)
