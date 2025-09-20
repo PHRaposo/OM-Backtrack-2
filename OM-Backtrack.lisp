@@ -8,12 +8,12 @@
 ;;;   Copyright (C) 1997-2003 by IRCAM-Centre Georges Pompidou, Paris, France.
 ;;;   Adapted to OM 7.2 by Paulo Raposo and Karim Haddad
 ;;;
-;;;   OM-BACKTRACK VERSION 2.0 is an expansion of the previous version.
+;;;   OM-BACKTRACK VERSION 2.1.0 is an expansion of the previous version.
 ;;;   Copyright (C) 2024 - Paulo Henrique Raposo
 ;;;
 ;;;   LISP LIBRARIES:
 ;;;   
-;;; * SCREAMER 4.0.0
+;;; * SCREAMER 4.0.1
 ;;;   Based on original version 3.20 by:
 ;;;
 ;;;   Jeffrey Mark Siskind (Department of Computer Science, University of Toronto)
@@ -25,6 +25,7 @@
 ;;;
 ;;;   Maintaner: Nikodemus Siivola <https://github.com/nikodemus/screamer>
 ;;;
+;;;   New rational numbers support by Paulo Raposo (version 4.0.1)
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (in-package :om)
@@ -35,13 +36,14 @@
 
 (defvar *backtrack-files* nil)
 (setf  *backtrack-files* (list	
-                         (om::om-relative-path '("sources" "screamer 4.0.0") "package")
-                         (om::om-relative-path '("sources" "screamer 4.0.0") "screamer")
+                         (om::om-relative-path '("sources" "screamer 4.0.1") "package")
+                         (om::om-relative-path '("sources" "screamer 4.0.1") "screamer")
                          (om::om-relative-path '("sources") "screaminterface") 					 
-                         (om::om-relative-path '("sources") "screamer-additions")						 					 						 				 					  
-			 (om::om-relative-path '("sources") "screamboxes")
-                         (om::om-relative-path '("sources") "screamfuns")		 					 
-			 (om::om-relative-path '("sources") "non-deter-patch")								  							 
+                         (om::om-relative-path '("sources") "screamer-additions")
+			                   (om::om-relative-path '("sources") "screamboxes")
+                         (om::om-relative-path '("sources") "screamfuns")
+                         (om::om-relative-path '("sources") "om-interface")                         
+			                   (om::om-relative-path '("sources") "non-deter-patch")								  							 
                           ))
 						 
 ;--------------------------------------------------
@@ -55,10 +57,20 @@
 
 
 (fill-library '(("primitives" nil nil (either fail) nil)
-				("variables" nil nil (an-integer-between a-member-of a-random-member-of list-of-members-of list-of-random-members-of list-of-integers-between a-chord-in 
-	                                   list-of-chords-in) nil)
-				("constraints" nil nil (apply-cont assert! alldiff? growing?) nil)
-				("valuation" nil nil (one-value all-values print-values ith-value n-values possibly? necessarily?) nil)					
+                ("variables" nil nil (
+                        an-integer-between                
+                        a-member-of
+                        a-random-member-of
+                        list-of-members-of
+                        list-of-random-members-of
+                        list-of-integers-between
+                        a-rational-between
+                        a-ratio-between
+                        a-chord-in 
+                        list-of-chords-in
+                        ) nil)
+                ("constraints" nil nil (apply-cont assert! alldiff? growing?) nil)
+                ("valuation" nil nil (one-value all-values print-values ith-value n-values possibly? necessarily?) nil)					
                ))
  				
 (print (format nil "
@@ -68,7 +80,7 @@ OM-BACKTRACK was based on the original version for OM 4
    
  It was adapted to OM 7.2 by Paulo Henrique Raposo and Karim Haddad
 
-* OM-BACKTRACK VERSION 2.0 is an expansion of the previous version.
+* OM-BACKTRACK VERSION 2.1.0 is an expansion of the previous version.
   Copyright (C) 2024 - Paulo Henrique Raposo
    
   LISP LIBRARIES:
@@ -79,5 +91,7 @@ OM-BACKTRACK was based on the original version for OM 4
   Copyright 1992, 1993 University of Pennsylvania. All rights reserved.
   Copyright 1993 University of Toronto. All rights reserved.
     
-  Maintaner: Nikodemus Siivola <https://github.com/nikodemus/screamer>" 
+  Maintaner: Nikodemus Siivola <https://github.com/nikodemus/screamer>
+  
+  New rational numbers support: Paulo Henrique Raposo (from version 4.0.1 - 2025)" 
 s::*screamer-version*))

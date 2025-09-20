@@ -38,13 +38,15 @@ Adapted to OM 7.2 by Paulo Henrique Raposo and Karim Haddad
   LISP LIBRARIES:
 
 
-* SCREAMER 4.0.0
+* SCREAMER 4.0.1
+
+  Based on SCREAMER 4.0.0
+  Mantainer: Nikodemus Siivola <https://github.com/nikodemus/screamer>
+  
   Based on original version 3.20 by Jeffrey Mark Siskind and David Allen McAllester
   Copyright 1991 Massachusetts Institute of Technology. All rights reserved.
   Copyright 1992, 1993 University of Pennsylvania. All rights reserved.
   Copyright 1993 University of Toronto. All rights reserved.
-
-  Maintaner: Nikodemus Siivola <https://github.com/nikodemus/screamer>
 
 #### OM-Backtrack is an adaptation of the backtrack part of SCREAMER
 #### to the paradigm of visual programming language of Openmusic.
@@ -62,23 +64,6 @@ Adapted to OM 7.2 by Paulo Henrique Raposo and Karim Haddad
 
 #### The version of SCREAMER that is included here have a few modifications, listed below:
 
-
-#### - Fix for "+-rule-down" and "*-rule-down". [info](https://github.com/nikodemus/screamer/pull/15)
-
-
-####  - Fix bug and CONS in "apply-nondeterministic-nondeterministic". [info](https://github.com/nikodemus/screamer/pull/28)
-
-
-####  - Changes in "assert!-notv-equalv" by Swapneil Singh. [info](https://github.com/nikodemus/screamer/pull/34/commits/794719d8a9ee60388f9484b7944a1838a35a059c)
-
-
-####  - New version of macro "print-values". This version was included in the original OM-Backtrack and
-####   it's a counterpart of the original macro for adapted to OM.
-
-
-####  - New experimental random function: "a-random-member-of".
-
-
 ORIGINAL OM-BACKTRACK TUTORIAL PAGE (BY CHARLOTTE TRUCHET): . [http://recherche.ircam.fr/equipes/repmus/OpenMusic/user-doc/DocFiles/backtrackTutorial/ ](http://recherche.ircam.fr/equipes/repmus/OpenMusic/user-doc/DocFiles/backtrackTutorial/)
 
 
@@ -86,4 +71,6 @@ OM-BACKTRACK SCREENSHOT:
 
 ![alt text](https://github.com/PHRaposo/OM-Backtrack/blob/ac079e9583c2e95b70e063da8270ba6494738ff5/screenshot.png)
 
-# [Download](https://github.com/PHRaposo/OM-Backtrack-2.0/archive/refs/heads/main.zip)
+# [Download](https://github.com/PHRaposo/OM-Backtrack/archive/refs/heads/V2.0.zip)
+
+
