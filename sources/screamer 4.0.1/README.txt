@@ -220,8 +220,8 @@ package by using the following preamble to your file:
  <optional defpackage arguments>)
 (IN-PACKAGE :MY-PACKAGE)
 
-9. Version 4.0.1 (by Paulo Raposo) - Rational numbers are now supported in Screamer. The
-following functions have been added:
+9. Version 4.0.1 (by Paulo Raposo) - Rational numbers are now supported in Screamer.
+The following functions/macros have been added:
 
 A-RANDOM-MEMBER-OF
 A-RATIONAL
@@ -246,6 +246,9 @@ A-FLOAT-ABOVEV
 A-FLOAT-BELOWV
 A-FLOAT-BETWEENV
 A-RANDOM-MEMBER-OFV
+N-VARIABLES (macro)
+N-LISTS-OF VARIABLES (macro)
+RANDOM-FORCE
 
 The following functions have been added/modified to support rational numbers:
 LINEAR-FORCE
@@ -276,15 +279,13 @@ APPLY-NONDETERMINISTIC FIX
 MAPCAR-NONDETERMINISTIC
 ASSERT!-NOTV-EQUALV FIX
 VARIABLE DEPENDENCIES SLOT
-MODIFIED VERSION OF ATTACH-DEPENDENCIES!-INTERNAL
-MODIFIED VERSION OF GET-VARIABLE-DEPENDENCY-CLOSURE (INCLUDED IN STATIC-ORDERING AND REORDER)
-BEST-VARIABLE-COST (NEW FUNCTION FOR GET-VARIABLE-DEPENDENCY-CLOSURE - not in swapneils version)
 LAMBDA-NONDETERMINISTIC
 APPLY-SUBSTITUTION
 OCCURS-IN?
 BOUNDED? - (modified to include rationals)
 
-Constraint package functions modified to use the new variable generators (see initial commit ):
+
+Constraint package functions modified to use the new variable generators (see initial commit):
  - ALL VARIABLES PREDICATES (VARIABLE-INTEGER?, VARIABLE-NONINTEGER?, etc.)
  - ALL RESTRICTION FUNCTIONS (RESTRICT-INTEGER!, RESTRICT-NONINTEGER!, etc.)
  - ALL VARIABLE LOWER/UPPER BOUNDS AND DOMAINS PRUNING (RESTRICT-BOUNDS!, RESTRICT-ENUMERATED-DOMAIN!, etc.)
@@ -294,21 +295,26 @@ Constraint package functions modified to use the new variable generators (see in
  - TRANSFORM-KNOWN?, TRANSFORM-ASSERT!- AND TRANSFORM-DECIDE
 
 New macros:
-OPTIMIZE-VALUE (based on BEST-VALUE)
+OPTIMIZE-VALUE (based on BEST-VALUE, see best-optimize-value-examples.lisp)
 N-VALUES (by Killian Sprotte, from PWGL Community Library Repository: https://github.com/JulienVincenot/PWGL-community-library/blob/main/User-library/smc-0.2.7/screamer-additions.lisp)
+
+New global variables: 
+*maximum-random-domain-size*
 
 New tests files and tests.lisp modifications
  - rational-tests.lisp
  - variable-types.lisp
+ - funcallv-tests.lisp
  - tests.lisp
-   - runs screamer::rational-ordeal, screamer::variable-type-tests and screamer::test-funcallv under Stefil)
+   - runs screamer::rational-ordeal, screamer::variable-type-tests and screamer::test-funcallv under Stefil
    - TODO: APPLYV tests
    
 Additional changes:
  - Primordial.lisp (Lispworks and Allegro Common LISP compatibility)  
  - Clozure Common LISP support (SCREAMER::WALK)
  - Added Alexandria as a dependency in ASDF system definition.
-  
+
+ 
  Examples (third argument of rational/ratio generators are the maximum ratio denominator): 
 > (all-values (a-rational-between 0 1 4))
 (0 1/4 1/3 1/2 2/3 3/4 1)
@@ -353,16 +359,6 @@ Enhancements:
  These strategies are automatically applied to propagate domain restrictions
  across complex variable structures.
 
- Automatic Domain Generation
- A new feature enables automatic domain generation when a constraint is applied,
- provided the domain size remains within a configurable limit. This is controlled
- by the global variable:
-
-   *maximum-list-domain-size* Default: 1000
-
- - If the estimated domain size exceeds this threshold, automatic generation is skipped.
- - Users can override the default value to accommodate larger domains as needed.
-
 Modified functions:
 KNOWN?-CONSTRAINT
 PROPAGATE-GFC
@@ -389,9 +385,87 @@ DEEP-GROUND?
 DEEP-FINITE-DOMAIN?
 FLATTEN
 SUBSTITUTE-VARIABLE
-SET-CONSTRAINT-ENUMERATED-DOMAIN!
-
-New global variable: 
-*maximum-list-domain-size*
 
 SEE EXAMPLES IN FUNCALLV-TESTS.LISP
+
+
+New feature: SCREAMER-EXTENSIBLE-TYPES (EXPERIMENTAL)
+
+This update introduces a new feature in Screamer that allows users to define
+custom variable types, enhancing the flexibility and extensibility of the
+constraint system. Users can now create and register their own types, which
+can be used in constraints, variable declarations, and other parts of the
+Screamer framework. The possible types are now tracked from enumerated domains
+of non number variables.
+
+About canonical-type and Type Order
+
+The function CANONICAL-TYPE is central to Screamer's extensible type system.
+It determines the canonical type of an object for use in constraints and
+variable declarations. The order of type checks in CANONICAL-TYPE is important:
+for example, proper lists are classified as 'list rather than 'cons, because the
+check for list comes before cons. This ensures that each object is assigned the
+most specific and appropriate type.
+
+When extending Screamer with new types, make sure to update CANONICAL-TYPE and
+carefully consider the order in which types are checked. This guarantees correct
+classification and avoids unintended overlaps (e.g., distinguishing between lists
+and cons cells).
+
+Defining Custom Types
+
+After enabling this feature by compiling Screamer with the #+screamer-extensible-types
+feature, users can define a new type in two ways:
+
+1. Global Variable Method (Recommended for system-wide types):
+Add the type symbol to the global variable *NONNUMBER-TYPES* before
+compiling or loading Screamer. Screamer will automatically generate all 
+associated functions and generator functions for every type in the list. This
+is the best approach if you want the new type to be available everywhere Screamer
+is used.
+
+2.Macro Method (Recommended for project-specific types):
+In your own project, you can manually call the macros (DEFINE-SCREAMER-TYPE ...)
+and (DEFINE-SCREAMER-GENERATOR-FUNCTION ...) from within the SCREAMER package
+before loading or compiling any code that uses these functions. This is useful
+if users want to define types only for a specific project or session.
+
+The generated functions follow a consistent naming convention based on the type name,
+e.g. the type LIST generates LISTPV, A-LISTV; the type ARRAY generates ARRAYPV,
+AN-ARRAYV, etc.
+
+Example:
+
+Include the type or types in the global variable list *NONNUMBER-TYPES*:
+
+(defparameter-compile-time *nonnumber-types*
+  '(hash-table ...) "...")
+
+Or manually define the type:
+
+(in-package :screamer)
+(define-screamer-type hash-table)
+(define-screamer-generator-function hash-table)
+
+This will generate the following functions:
+VARIABLE-POSSIBLY-HASH-TABLE?
+VARIABLE-HASH-TABLE?
+VARIABLE-NONHASH-TABLE?
+KNOWN?-HASH-TABLEPV
+KNOWN?-NOTV-HASH-TABLEPV
+ASSERT!-HASH-TABLEPV
+ASSERT!-NOTV-HASH-TABLEPV
+HASH-TABLEPV (EXPORTED)
+A-HASH-TABLEV (EXPORTED)
+
+The user can now use (KNOWN? (HASH-TABLEPV X)), (ASSERT! (HASH-TABLEPV X)) and
+(DECIDE (HASH-TABLEPV)), which will call the specialized lifted functions.
+
+The generator function A-HASH-TABLEV can be used to create variables of type
+hash-table.
+
+Currently the version 4.0.1 was tested on the following LISP implementations:
+ - SBCL 2.5.8
+ - Allegro Common LISP 11.0
+ - LispWorks 8.0.1
+ - Clozure Common LISP 1.13
