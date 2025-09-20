@@ -153,7 +153,6 @@
            #:*maximum-discretization-range*
            #:*strategy*
            #:*maximum-random-domain-size*
-           #:*maximum-list-domain-size*
            #:define-screamer-type
            #:define-screamer-generator-function
            #:*nonnumber-types*))

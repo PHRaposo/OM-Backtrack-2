@@ -7612,7 +7612,8 @@ in the process of determining a good search order."
   (if variables
       (let ((variable (value-of (first variables))))
         (cond ((variable? variable)
-               (when (and (variable-dependencies variable)
+               (when (and (not (bounded? variable))
+                          (variable-dependencies variable)
                           (not (deep-bound? (variable-dependencies variable))))
                      (static-ordering-internal (variable-dependencies variable) force-function))
                (funcall-nondeterministic force-function variable)
@@ -7655,10 +7656,6 @@ sufficient hooks for the user to define her own force functions.)"
              (or (variable-integer? variable)
                  (and (variable-rational? variable)
                       (variable-max-denom variable)))))))
-
-(defvar *maximum-list-domain-size* 100
- "Specifies the maximum number of elements permitted in a list domain
- when using the APPLYV or FUNCALLV functions for enumeration.")
   
 (defun deep-value-of (x)
   (let ((x (value-of x)))
@@ -7889,62 +7886,6 @@ sufficient hooks for the user to define her own force functions.)"
     (:gfc (assert!-constraint-gfc predicate polarity? variables))
     (:ac (assert!-constraint-ac predicate polarity? variables))))
 
-(defun propagate-domain (variables nondomain-variable)
-  ;; note: NONDOMAIN-VARIABLE must be a variable which does not have an
-  ;;       enumerated domain.
-  ;;       All of the VARIABLES except the NONDOMAIN-VARIABLE must have
-  ;;       enumerated domains.
-(unless (deep-bound? (remove nondomain-variable (copy-list variables) :test #'eq))
-  ;; note: This avoids unnecessary updates when All of VARIABLES are ground
-  ;;       except for NONDOMAIN-VARIABLE.
-  (let ((domain-size-variables (if (and (variable-integer? nondomain-variable)
-                                        (variable-lower-bound nondomain-variable)
-                                        (variable-upper-bound nondomain-variable))
-                                   (domain-size variables)
-                                   (domain-size (remove nondomain-variable (copy-list variables) :test #'eq)))))
-   (if (and domain-size-variables
-            (<= domain-size-variables *maximum-list-domain-size*))
-      (let* ((variables (copy-list variables))
-             (nondomain-variable-position (position nondomain-variable variables :test #'eq))
-             (new-enumerated-domain
-              (all-values
-               (nth nondomain-variable-position
-                (solution variables
-                 (static-ordering #'linear-force))))))
-        (restrict-enumerated-domain! nondomain-variable new-enumerated-domain))))))
-
-(defun set-constraint-enumerated-domain! (variables)
- ;; Set the domain of all variables in VARIABLES to all possible values if their
- ;; domain size is small and finite."
-  (let ((multiple-nondomain-variables? nil)
-        (nondomain-variable nil))
-    (dolist (variable (variables-in (copy-list variables)))
-      (unless (enumerated-domain-p variable)
-        (if nondomain-variable (setf multiple-nondomain-variables? t))
-        (setf nondomain-variable variable)))
-    (cond
-      (multiple-nondomain-variables?
-      ;; The case where two or more variables lacks a enumerated domain
-       (let ((variables (copy-list variables)))
-         (dolist (variable (variables-in variables))
-           (unless (enumerated-domain-p variable)
-             (attach-noticer!
-            #'(lambda ()
-               (unless (deep-bound? variables)
-                (global
-                 (block exit
-                  (let ((nondomain-variable nil))
-                   (dolist (v (variables-in variables))
-                    (unless (enumerated-domain-p v)
-                     (if nondomain-variable (return-from exit))
-                     (setf nondomain-variable v)))
-                  (if nondomain-variable
-                    (propagate-domain variables nondomain-variable)))))))
-            variable)))))
-      (nondomain-variable
-       ;; The case where one variable lacks a enumerated domain
-       (propagate-domain variables nondomain-variable)))))
-
 (defun known?-funcallv (f &rest x) (known?-constraint f t x))
 
 (defun known?-notv-funcallv (f &rest x) (known?-constraint f nil x))
@@ -7973,7 +7914,6 @@ sufficient hooks for the user to define her own force functions.)"
                       (if (deep-bound? x)
                           (assert!-equalv z (apply f (deep-value-of x)))))
                   argument))
-                (set-constraint-enumerated-domain! (cons z x))
               z))))
 
 (defun arguments-for-applyv (x xs)
@@ -8016,7 +7956,6 @@ sufficient hooks for the user to define her own force functions.)"
                         (if (deep-bound? arguments)
                             (assert!-equalv z (apply f (deep-value-of arguments)))))
                     argument))
-                (set-constraint-enumerated-domain! (cons z arguments))
                 z)))))
 
 
@@ -8680,7 +8619,7 @@ X2."
 
 
 ;;; note: Enable this to use EXTENSIBLE TYPES.
-#+(or)
+;;; #+(or)
 (eval-when (:compile-toplevel :load-toplevel :execute)
   (pushnew :screamer-extensible-types *features* :test #'eq))
 
@@ -10113,7 +10052,8 @@ Other types of objects and variables have range size NIL."
   (let ((variable (find-best cost-function order variables)))
     (when (and variable
                (not (funcall terminate? (funcall cost-function variable))))
-      (when (and (variable-dependencies variable)
+      (when (and (not (bounded? variable))
+                 (variable-dependencies variable)
                  (not (deep-bound? (variable-dependencies variable))))
             (reorder-internal (variable-dependencies variable)
                            cost-function terminate? order force-function))

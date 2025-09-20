@@ -11,8 +11,6 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; "?" - NONDETERMINISTIC PATCH (NEW VERSION FOR BACKTRACK 2.0)
 
-(defvar *backtrack-debug* nil)
-
 (defmethod nondeter-omlispfun? ((self OMBoxlispCall))
  (let* ((funname (reference self)) ;(car (gen-code self 0))) ;fix 20.06.2024
         (record (screamer::get-function-record funname)))
@@ -40,11 +38,11 @@
         (sub-patches  (x-append (find-class-boxes boxes 'omboxpatch) ;<== COLLECT OMBOXPATCH (29.12.2024)
 		                        (find-class-boxes boxes 'omboxabspatch))) ;<== OMBOXABSPATCH (SUB PATCHES)
         (non-deter-sub-patch? (not (null (position t (mapcar #'(lambda (x)
-													  (let ((ref (reference x)))
-													   (if (member ref patches :test #'equal)
-										                    nil
-		                                                   (non-deter-patch? ref patches))))
-													  sub-patches))))))	
+                                                                (let ((ref (reference x)))
+                                                                (if (member ref patches :test #'equal)
+                                                                      nil
+                                                                    (non-deter-patch? ref patches))))
+                                                      sub-patches))))))
   (if (or screamerboxes (some #'nondeter-omlispfun? lispfuns) non-deter-sub-patch? screamer-valuation-boxes) 
        t
        nil)))
@@ -61,7 +59,6 @@
 ;;; omNG-box-value - OMBoxPatch
 
 (defmethod omNG-box-value ((self OMBoxPatch) &optional (num-out 0))
-(when *backtrack-debug* (print (format nil "COMPILED?: ~A" (compiled? (reference self))))) 
 (handler-bind ((error #'(lambda (c)
                           (when *msg-error-label-on*
                             (om-message-dialog (string+ "Error while evaluating the box " (string (name self)) " : " 
@@ -77,16 +74,12 @@
 	 (setf (value self) (list (reference self))) (car (value self))))
 	 	 
     ((equal (allow-lock self) "l")
-     ;(unless (compiled? (reference self))
+     (unless (compiled? (reference self))
        (if (and (lisp-exp-p (reference self)) (editorframe self))
-         (progn (when *backtrack-debug* (print "OMLISP-LAMBDA-PATCH COMPILED!"))
-		  (compile-without-close (editorframe self)))          
-          (progn (when *backtrack-debug* (print "LAMBDA-PATCH COMPILED!"))
-		   (compile-patch (reference self)))
-		  ) ;)				 	 				  
+		       (compile-without-close (editorframe self))        
+		       (compile-patch (reference self))))				 	 				  
          (setf (value self) ;;; TEST
                 (list (special-lambda-value self (intern (string (code (reference self))) :om))))
-         (when *backtrack-debug* (print "SETF LAMBDA VALUE: TEST"))
 		 (car (value self))		 
 		 )
 		 		  
@@ -94,11 +87,9 @@
      (nth num-out (value self)))
 	 
     (t ;(unless (compiled? (reference self))
-           (if (and (lisp-exp-p (reference self)) (editorframe (reference self))) 
-             (progn (compile-without-close (editorframe (reference self))) 
-				(when *backtrack-debug* (print "OMLISPPATCH COMPILED!")))
-             (progn (compile-patch (reference self)) 
-			  (when *backtrack-debug* (print "PATCH COMPILED!"))))
+           (if (and (lisp-exp-p (reference self)) (editorframe (reference self)))
+               (compile-without-close (editorframe (reference self)))
+               (compile-patch (reference self)))
 			  ;)
 		(let* ((args  (mapcar #'(lambda (input) 
                                  (omNG-box-value  input)) (inputs self)))
@@ -116,9 +107,8 @@
            (setf (value self) rep))
            ;;;; TEST
            (when (equal (allow-lock self) nil)
-		   (when *backtrack-debug* (print "ALLOW-LOCK NIL: SETF VALUE - TEST"))
              (setf (value self) rep)
-			  )
+			     )
            ;;;;	 	   
              (nth num-out rep))))))
 
@@ -150,12 +140,12 @@
 	  (cond ((non-deter-patch? self)
 ;>========== *LET-LIST* IN NONDETERMINISTIC CONTEXTS - MULTIPLE OUTPUTS ==========<; 
 		     (setf body `(values ,.(mapcar #'(lambda (theout)
-                                                                       (let ((theinputs (loop for i in (inputs theout)
-	                                                                                                collect (connected? i))))    
-                                                                       (if (screamer-valuation-boxes-p (caar theinputs))
-                                                                           (progn (setf nondeterministic-context? t)
-                                                                                      (gen-valuation-code (caar theinputs) (cadar theinputs)))
-                                                                           (gen-code theout 0))))
+                                          (let ((theinputs (loop for i in (inputs theout)
+                                                                    collect (connected? i))))    
+                                          (if (screamer-valuation-boxes-p (caar theinputs))
+                                              (progn (setf nondeterministic-context? t)
+                                                        (gen-valuation-code (caar theinputs) (cadar theinputs)))
+                                              (gen-code theout 0))))
                                                         out-box)))
 				;(print `(screamer::defun ,(intern (string out-symb) :om)  (,.symbols)
 		  		;   ,body)) ;<== CHECK CODE
@@ -205,18 +195,18 @@
 	  (setf *let-list* nil) 
 	  (cond ((non-deter-patch? self) 
 		     (setf body `(values ,.(mapcar #'(lambda (theout)
-                                                                       (let ((theinputs (loop for i in (inputs theout)
-	                                                                                                collect (connected? i))))
-                                                                        
-                                                                       (if (screamer-valuation-boxes-p (caar theinputs))
-                                                                           (progn (setf nondeterministic-context? t)
-                                                                                      (gen-valuation-code (caar theinputs) (cadar theinputs)))
-                                                                           (gen-code theout 0))))
+                                          (let ((theinputs (loop for i in (inputs theout)
+                                                                    collect (connected? i))))
+                                          
+                                          (if (screamer-valuation-boxes-p (caar theinputs))
+                                              (progn (setf nondeterministic-context? t)
+                                                        (gen-valuation-code (caar theinputs) (cadar theinputs)))
+                                              (gen-code theout 0))))
                                                         out-box)))
 		     (setf patch-code (if nondeterministic-context? 
-                                                   `(screamer::defun ,(intern (string out-symb) :om)  (,.symbols)
+                      `(screamer::defun ,(intern (string out-symb) :om)  (,.symbols)
 		  		  	     	     ,body)
-                                                  `(screamer::defun ,(intern (string out-symb) :om)  (,.symbols)
+                      `(screamer::defun ,(intern (string out-symb) :om)  (,.symbols)
 		  		  	     	    (let* ,(reverse *let-list*) ,body)))))
 								
   		    (t (setf body `(values ,.(mapcar #'(lambda (theout)

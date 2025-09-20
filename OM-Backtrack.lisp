@@ -8,7 +8,7 @@
 ;;;   Copyright (C) 1997-2003 by IRCAM-Centre Georges Pompidou, Paris, France.
 ;;;   Adapted to OM 7.2 by Paulo Raposo and Karim Haddad
 ;;;
-;;;   OM-BACKTRACK VERSION 2.0 is an expansion of the previous version.
+;;;   OM-BACKTRACK VERSION 2.1.0 is an expansion of the previous version.
 ;;;   Copyright (C) 2024 - Paulo Henrique Raposo
 ;;;
 ;;;   LISP LIBRARIES:
@@ -80,7 +80,7 @@ OM-BACKTRACK was based on the original version for OM 4
    
  It was adapted to OM 7.2 by Paulo Henrique Raposo and Karim Haddad
 
-* OM-BACKTRACK VERSION 2.0 is an expansion of the previous version.
+* OM-BACKTRACK VERSION 2.1.0 is an expansion of the previous version.
   Copyright (C) 2024 - Paulo Henrique Raposo
    
   LISP LIBRARIES:
