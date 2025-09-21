@@ -1,16 +1,21 @@
-# OM-Backtrack 2.0
+# OM-Backtrack 2
 
 
 * OM-BACKTRACK is based on the original version for OM 4
+
+
    by Gerard Assayag and Augusto Agon
+
+   
    Copyright (C) 1997-2003 by IRCAM-Centre Georges Pompidou, Paris, France.
 
 
 Adapted to OM 7.2 by Paulo Henrique Raposo and Karim Haddad
 
 
-* OM-BACKTRACK VERSION 2.0 is an expansion of the previous version.
+* OM-BACKTRACK 2 is an expansion of the previous version.
 
+* Current version: 2.1.0
 
   Copyright (C) 2024 - Paulo Henrique Raposo
  
@@ -18,7 +23,7 @@ Adapted to OM 7.2 by Paulo Henrique Raposo and Karim Haddad
 * WARNING: BECAUSE THE MODIFICATIONS IN THE NONDETERMINISTIC PATCHES MECHANISM, THIS VERSION IS NO LONGER COMPATIBLE WITH THE PREVIOUS VERSION.
 
  
-* CHANGES IN VERSION 2.0:
+* CHANGES IN VERSION 2:
  
  
  -> REMOVED PREFERENCES MODULE AND GLOBAL EVALUATIONS;
@@ -32,9 +37,19 @@ Adapted to OM 7.2 by Paulo Henrique Raposo and Karim Haddad
 
  -> NEW METHODS: EITHER, FAIL, ASSERT!, APPLY-NONDETERMINISTIC AND FUNCALL-NONDETERMINISTIC;
 
+
  -> NEW TUTORIAL PATCHES BASED ON ORIGINAL PAPERS BY SCREAMER'S AUTHORS.
- 
-   
+
+
+* CHANGES IN VERSION 2.1.0:
+
+
+ -> Screamer update (4.0.1)
+
+
+ -> New functions: A-RATIONAL-BETWEEN and A-RATIO-BETWEEN
+
+
   LISP LIBRARIES:
 
 
