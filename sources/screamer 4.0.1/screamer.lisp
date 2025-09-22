@@ -5978,7 +5978,7 @@ Otherwise returns the value of X."
               (variable? y))
           (if (and (not (eq (variable-enumerated-domain y) t))
                   (not (member x (variable-enumerated-domain y) :test #'=)))
-              (fail)))         
+              (fail)))   
         ((and (not (variable? y))
                    (variable? x))
           (if (and (not (eq (variable-enumerated-domain x) t))
@@ -5992,76 +5992,36 @@ Otherwise returns the value of X."
                      (let ((intersection-of-domains (intersection (variable-enumerated-domain x)
                                                                   (variable-enumerated-domain y)
                                                      :test #'=)))
-                      (cond ((variable-rational? x)
-                            (cond ((variable-integer? x)
-                                   (if (not (every #'integerp intersection-of-domains))
-                                       (restrict-enumerated-domain!
-                                        x (mapcar #'(lambda (element)
-                                                      (typecase element
-                                                      (integer element)
-                                                      (otherwise (round element))))
-                                                  intersection-of-domains))
-                                        (restrict-enumerated-domain! x intersection-of-domains)))
-                                  (t (if (not (every #'rational intersection-of-domains))
-                                     (restrict-enumerated-domain!
-                                      x (mapcar #'(lambda (element)
-                                                    (typecase element
-                                                    (rational element)
-                                                    (otherwise (rationalize element))))
-                                                  intersection-of-domains))
-                                      (restrict-enumerated-domain! x intersection-of-domains)))))
-                            ((variable-nonrational? x)
-                             (if (not (every #'float intersection-of-domains))
-                                 (restrict-enumerated-domain!
-                                 x (mapcar #'(lambda (element)
-                                              (typecase element
-                                               (float element)
-                                               (otherwise (coerce element 'double-float))))
-                                           intersection-of-domains))
-                                (restrict-enumerated-domain! x intersection-of-domains)))
-                            (t (restrict-enumerated-domain! x intersection-of-domains)))
-                        (cond ((variable-rational? y)
-                               (cond ((variable-integer? y)
-                                      (if (not (every #'integerp intersection-of-domains))
-                                          (restrict-enumerated-domain!
-                                          y (mapcar #'(lambda (element)
-                                                      (typecase element
-                                                        (integer element)
-                                                        (otherwise (round element))))
-                                                intersection-of-domains))
-                                          (restrict-enumerated-domain! y intersection-of-domains)))
-                                      (t (if (not (every #'rational intersection-of-domains))
-                                            (restrict-enumerated-domain!
-                                              y (mapcar #'(lambda (element)
-                                                    (typecase element
-                                                    (rational element)
-                                                    (otherwise (rationalize element))))
-                                                    intersection-of-domains))
-                                              (restrict-enumerated-domain! y intersection-of-domains)))))
-                                ((variable-nonrational? y)
-                                 (if (not (every #'float intersection-of-domains))
-                                     (restrict-enumerated-domain!
-                                      y (mapcar #'(lambda (element)
-                                                   (typecase element
-                                                    (float element)
-                                                    (otherwise (coerce element 'double-float))))
-                                                intersection-of-domains))
-                                    (restrict-enumerated-domain! y intersection-of-domains)))
-                                (t (restrict-enumerated-domain! y intersection-of-domains))))
+                      (when (not (every #'(lambda (element)
+                                           (member element intersection-of-domains :test #'=))
+                                        (variable-enumerated-domain x)))
+                            (if (set-enumerated-domain!
+                                 x (remove-if-not #'(lambda (element)
+                                                     (member element intersection-of-domains :test #'=))
+                                                  (variable-enumerated-domain x)))
+                                (run-noticers x)))
+                      (when (not (every #'(lambda (element)
+                                           (member element intersection-of-domains :test #'=))
+                                        (variable-enumerated-domain y)))
+                            (if (set-enumerated-domain!
+                                 y (remove-if-not #'(lambda (element)
+                                                     (member element intersection-of-domains :test #'=))
+                                                  (variable-enumerated-domain y)))
+                                (run-noticers y))))
                       ;; the case where only x has an enumerated domain
                       ;; prune x domain with respect to bounds of y
                       (let ((x-domain (variable-enumerated-domain x)))
                         (cond ((variable-lower-bound y)
                                 (if (variable-upper-bound y)
-                                      (restrict-enumerated-domain! y
+                                      (set-enumerated-domain! x
                                         (remove-if (lambda (element) (or (< element (variable-lower-bound y))
                                                                          (> element (variable-upper-bound y))))
                                                     x-domain))
-                                    (restrict-enumerated-domain! y
+                                    (set-enumerated-domain! x
                                       (remove-if (lambda (element) (< element (variable-lower-bound y)))
                                                       x-domain))))
                                 ((variable-upper-bound y)
-                                (restrict-enumerated-domain! y
+                                (set-enumerated-domain! x
                                   (remove-if (lambda (element) (> element (variable-upper-bound y)))
                                             x-domain)))))))
                 ;; the case where only y has an enumerated domain
@@ -6070,15 +6030,15 @@ Otherwise returns the value of X."
                       (let ((y-domain (variable-enumerated-domain y)))
                         (cond ((variable-lower-bound x)
                                 (if (variable-upper-bound x)
-                                      (restrict-enumerated-domain! x
+                                      (set-enumerated-domain! y
                                         (remove-if (lambda (element) (or (< element (variable-lower-bound x))
                                                                          (> element (variable-upper-bound x))))
                                                     y-domain))
-                                    (restrict-enumerated-domain! x
+                                    (set-enumerated-domain! y
                                       (remove-if (lambda (element) (< element (variable-lower-bound x)))
                                                   y-domain))))
                                 ((variable-upper-bound x)
-                                (restrict-enumerated-domain! x
+                                (set-enumerated-domain! y
                                   (remove-if (lambda (element) (> element (variable-upper-bound x)))
                                               y-domain)))))))))))
 
