@@ -5952,6 +5952,7 @@ Otherwise returns the value of X."
              (/= z (max x y)))
         (fail))))
 
+
 (defun =-rule (x y)
 (declare (type variable x y))
   (cond
@@ -5986,61 +5987,91 @@ Otherwise returns the value of X."
               (fail)))
         ((and (variable? x)
               (variable? y))
-          (cond ((not (eq (variable-enumerated-domain x) t))
-                 (if (not (eq (variable-enumerated-domain y) t))
-                     ;; the case where x and y have enumerated domains
-                     (let ((intersection-of-domains (intersection (variable-enumerated-domain x)
-                                                                  (variable-enumerated-domain y)
-                                                     :test #'=)))
-                      (when (not (every #'(lambda (element)
-                                           (member element intersection-of-domains :test #'=))
-                                        (variable-enumerated-domain x)))
-                            (if (set-enumerated-domain!
-                                 x (remove-if-not #'(lambda (element)
-                                                     (member element intersection-of-domains :test #'=))
-                                                  (variable-enumerated-domain x)))
-                                (run-noticers x)))
-                      (when (not (every #'(lambda (element)
-                                           (member element intersection-of-domains :test #'=))
-                                        (variable-enumerated-domain y)))
-                            (if (set-enumerated-domain!
-                                 y (remove-if-not #'(lambda (element)
-                                                     (member element intersection-of-domains :test #'=))
-                                                  (variable-enumerated-domain y)))
-                                (run-noticers y))))
-                      ;; the case where only x has an enumerated domain
-                      ;; prune x domain with respect to bounds of y
-                      (let ((x-domain (variable-enumerated-domain x)))
-                        (cond ((variable-lower-bound y)
-                                (if (variable-upper-bound y)
-                                      (set-enumerated-domain! x
-                                        (remove-if (lambda (element) (or (< element (variable-lower-bound y))
-                                                                         (> element (variable-upper-bound y))))
-                                                    x-domain))
-                                    (set-enumerated-domain! x
-                                      (remove-if (lambda (element) (< element (variable-lower-bound y)))
-                                                      x-domain))))
-                                ((variable-upper-bound y)
-                                (set-enumerated-domain! x
-                                  (remove-if (lambda (element) (> element (variable-upper-bound y)))
-                                            x-domain)))))))
-                ;; the case where only y has an enumerated domain
-                ;; prune y domain with respect to bounds of x
-                ((not (eq (variable-enumerated-domain y) t))
-                      (let ((y-domain (variable-enumerated-domain y)))
-                        (cond ((variable-lower-bound x)
-                                (if (variable-upper-bound x)
-                                      (set-enumerated-domain! y
-                                        (remove-if (lambda (element) (or (< element (variable-lower-bound x))
-                                                                         (> element (variable-upper-bound x))))
-                                                    y-domain))
-                                    (set-enumerated-domain! y
-                                      (remove-if (lambda (element) (< element (variable-lower-bound x)))
-                                                  y-domain))))
-                                ((variable-upper-bound x)
-                                (set-enumerated-domain! y
-                                  (remove-if (lambda (element) (> element (variable-upper-bound x)))
-                                              y-domain)))))))))))
+                ;; note: the case where both X and Y have enumerated-domains
+         (cond ((not (eq (variable-enumerated-domain x) t))
+                (if (and (not (eq (variable-enumerated-domain y) t))
+                         (<= (domain-size (list x y)) *maximum-discretization-range*))
+                    (let ((intersection-of-domains (intersection (variable-enumerated-domain x)
+                                                                 (variable-enumerated-domain y)
+                                                    :test #'=)))
+                    (when (not (every #'(lambda (element)
+                                          (member element intersection-of-domains :test #'=))
+                                      (variable-enumerated-domain x)))
+                          (if (set-enumerated-domain!
+                                x (remove-if-not #'(lambda (element)
+                                                    (member element intersection-of-domains :test #'=))
+                                                (variable-enumerated-domain x)))
+                              (run-noticers x)))
+                    (when (not (every #'(lambda (element)
+                                          (member element intersection-of-domains :test #'=))
+                                      (variable-enumerated-domain y)))
+                          (if (set-enumerated-domain!
+                                y (remove-if-not #'(lambda (element)
+                                                    (member element intersection-of-domains :test #'=))
+                                                (variable-enumerated-domain y)))
+                              (run-noticers y))))
+                    ;; note: the case where X has an enumerated-domain
+                    ;; Restricts the domain of Y to be compatible with
+                    ;; the variable type of Y.
+                    (when (<= (domain-size x) *maximum-discretization-range*)
+                    (let ((x-domain (variable-enumerated-domain x)))
+                    (restrict-enumerated-domain!
+                     y (cond ((variable-rational? y)
+                              (cond ((variable-integer? y)
+                                    (if (not (every #'integerp x-domain))
+                                        (mapcar #'(lambda (element)
+                                                           (typecase element
+                                                           (integer element)
+                                                           (otherwise (round element))))
+                                                x-domain)
+                                         x-domain))
+                                    (t (if (not (every #'rationalp x-domain))
+                                           (mapcar #'(lambda (element)
+                                                      (typecase element
+                                                      (rational element)
+                                                      (otherwise (rationalize element))))
+                                                  x-domain)
+                                            x-domain))))
+                            ((variable-nonrational? y)
+                             (if (not (every #'floatp x-domain))
+                                 (mapcar #'(lambda (element)
+                                              (typecase element
+                                               (float element)
+                                               (integer (float element))
+                                               (otherwise (coerce element 'double-float))))
+                                         x-domain)
+                                  x-domain))
+                            (t x-domain)))))))
+                ((and (not (eq (variable-enumerated-domain y) t))
+                      (<= (domain-size y) *maximum-discretization-range*))
+                 (let ((y-domain (variable-enumerated-domain y)))
+                   (restrict-enumerated-domain!
+                    x (cond ((variable-rational? x)
+                            (cond ((variable-integer? x)
+                                   (if (not (every #'integerp y-domain))
+                                       (mapcar #'(lambda (element)
+                                                      (typecase element
+                                                      (integer element)
+                                                      (otherwise (round element))))
+                                                  y-domain)
+                                        y-domain))
+                                  (t (if (not (every #'rationalp y-domain))
+                                     (mapcar #'(lambda (element)
+                                                    (typecase element
+                                                    (rational element)
+                                                    (otherwise (rationalize element))))
+                                              y-domain)
+                                      y-domain))))
+                            ((variable-nonrational? x)
+                             (if (not (every #'floatp y-domain))
+                                 (mapcar #'(lambda (element)
+                                              (typecase element
+                                               (float element)
+                                               (integer (float element))
+                                               (otherwise (coerce element 'double-float))))
+                                           y-domain)
+                                  y-domain))
+                            (t y-domain))))))))))
 
 (defun <=-rule (x y)
 (declare (type variable x y))
@@ -6071,16 +6102,20 @@ Otherwise returns the value of X."
     (cond ((and (not (variable? x)) (not (variable? y)) (= x y)) (fail))
           ((not (variable? x))
           (when (and (variable? y)
-                      (not (eq (variable-enumerated-domain y) t))
-                      (member x (variable-enumerated-domain y) :test #'=))
-            (set-enumerated-domain! y
-              (remove x (variable-enumerated-domain y) :test #'=))))
+                     (not (eq (variable-enumerated-domain y) t))
+                     (<= (domain-size y) *maximum-discretization-range*))
+                (if (member x (variable-enumerated-domain y) :test #'=)
+                    (if (set-enumerated-domain!
+                         y (remove x (variable-enumerated-domain y) :test #'=))
+                        (run-noticers y)))))
           ((not (variable? y))
-          (when (and (variable? x)
+           (when (and (variable? x)
                       (not (eq (variable-enumerated-domain x) t))
-                      (member y (variable-enumerated-domain x) :test #'=))
-            (set-enumerated-domain! x
-              (remove y (variable-enumerated-domain x) :test #'=)))))))
+                      (<= (domain-size x) *maximum-discretization-range*))
+                (if (member y (variable-enumerated-domain x) :test #'=)
+                    (if (set-enumerated-domain!
+                         x (remove y (variable-enumerated-domain x) :test #'=))
+                        (run-noticers x))))))))
 
 ;;; Lifted Arithmetic Functions (Two argument optimized)
 
