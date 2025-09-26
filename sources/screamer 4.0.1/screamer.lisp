@@ -4115,7 +4115,7 @@ Otherwise returns nil."
          (or (not (consp x)) (and (ground? (car x)) (ground? (cdr x)))))))
         
 (defun apply-substitution (x)
-  "If X is a SEQUENCE or HASH-TABLE, returns a freshly consed
+  "If X is a SEQUENCE or ARRAY, returns a freshly consed
 copy of the tree with all variables dereferenced.
 Otherwise returns the value of X."
   (let ((x (value-of x)))
@@ -4139,10 +4139,6 @@ Otherwise returns the value of X."
                  (setf (row-major-aref arr idx)
                        (apply-substitution (row-major-aref arr idx))))
                arr))
-      (hash-table
-       (let ((x (alexandria::copy-hash-table x)))
-         (maphash (lambda (k v) (setf (gethash k x) (apply-substitution v))) x)
-         x))
       (t x))))
 
 (cl:defun occurs-in? (x value)
@@ -4158,7 +4154,6 @@ Otherwise returns the value of X."
                       (dotimes (idx (array-total-size value))
                         (when (occurs-in? x (row-major-aref value idx))
                           (return-from occurs-in t)))))
-    ((hash-table-p value) (occurs-in? x (alexandria::hash-table-values value)))
     (t nil)))
 
  (defun attach-dependencies!-internal (dependencies x)
@@ -5952,7 +5947,6 @@ Otherwise returns the value of X."
              (/= z (max x y)))
         (fail))))
 
-
 (defun =-rule (x y)
 (declare (type variable x y))
   (cond
@@ -7712,13 +7706,13 @@ sufficient hooks for the user to define her own force functions.)"
   "Compares two objects for equality considering their types and structures."
  (the boolean
   (typecase x
+    (symbol      (and (symbolp y) (eq x y)))
+    (number      (and (numberp y) (eql x y)))
     (vector      (and (vectorp y) (equalp x y)))
     (array       (and (arrayp y) (equalp x y)))
     (cons        (and (consp y) (equal x y)))
     (string      (and (stringp y) (string= x y)))
     (hash-table  (and (hash-table-p y) (equalp x y)))
-    (number      (and (numberp y) (eql x y)))
-    (symbol      (and (symbolp y) (eq x y)))
     (t           (eql x y)))))
 
 (defun known?-constraint (f polarity? x)
@@ -9800,16 +9794,11 @@ VAR-FN and ARGS are used to construct each variable.
  (defun variables-in (x)
   ;; Get initial variable list from `x'
   (the list
-   (let ((x (value-of x)))
-       ;; Note: (value-of x) is required to dereference a variable 
-       ;; whose value has been unified (using EQUALV) with other 
-       ;; data types, such as cons cells, lists, and so on.
        (typecase x
          (variable (list x))
-         (cons (append (variables-in (car x))
+         (cons (append (variables-in (value-of (car x)))
                        (variables-in (cdr x))))
          (string nil)
-         ;; (simple-vector (apply #'append (map 'list #'variables-in x)))
          (sequence (apply #'append (map 'list #'variables-in x)))
          (array (flet ((mappend-arr (arr f)
                          (let (coll)
@@ -9817,13 +9806,7 @@ VAR-FN and ARGS are used to construct each variable.
                              (alexandria::appendf coll (funcall f (row-major-aref arr idx))))
                            coll)))
                   (mappend-arr x #'variables-in)))
-         (hash-table (let (coll)
-                       (maphash (lambda (k v)
-                                  (declare (ignore k))
-                                  (alexandria::appendf coll (variables-in v)))
-                                x)
-                       coll))
-         (otherwise nil)))))
+         (otherwise nil))))
 
 ;;; note: SOLUTION and LINEAR-FORCE used to be here but was moved to be before
 ;;;       KNOWN?-CONSTRAINT to avoid forward references to nondeterministic
