@@ -6090,26 +6090,9 @@ Otherwise returns the value of X."
 
 (defun /=-rule (x y)
   ;; note: Got rid of the nondeterministic version of /=-RULE.
-(declare (type variable x y))
   (let ((x (value-of x))
         (y (value-of y)))
-    (cond ((and (not (variable? x)) (not (variable? y)) (= x y)) (fail))
-          ((not (variable? x))
-          (when (and (variable? y)
-                     (not (eq (variable-enumerated-domain y) t))
-                     (<= (domain-size y) *maximum-discretization-range*))
-                (if (member x (variable-enumerated-domain y) :test #'=)
-                    (if (set-enumerated-domain!
-                         y (remove x (variable-enumerated-domain y) :test #'=))
-                        (run-noticers y)))))
-          ((not (variable? y))
-           (when (and (variable? x)
-                      (not (eq (variable-enumerated-domain x) t))
-                      (<= (domain-size x) *maximum-discretization-range*))
-                (if (member y (variable-enumerated-domain x) :test #'=)
-                    (if (set-enumerated-domain!
-                         x (remove y (variable-enumerated-domain x) :test #'=))
-                        (run-noticers x))))))))
+    (if (and (not (variable? x)) (not (variable? y)) (= x y)) (fail))))
 
 ;;; Lifted Arithmetic Functions (Two argument optimized)
 
