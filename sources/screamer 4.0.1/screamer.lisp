@@ -6930,14 +6930,15 @@ vector."
 (defun known?-all-differentv (x)
   (if (null x)
        t
-      (andv (known?-notv-memberv (car x) (cdr x))
-            (known?-all-differentv (cdr x)))))
+      (and (known?-notv-memberv (car x) (cdr x))
+           (known?-all-differentv (cdr x)))))
 
 (defun known?-notv-all-differentv (x)
-  (if (null x)
-       t
-      (andv (known?-memberv (car x) (cdr x))
-            (known?-notv-all-differentv (cdr x)))))
+  (cond ((or (null x) (= (length x) 1)) nil)
+        ((= (length x) 2)
+         (known?-equalv (car x) (cadr x)))
+        (t (or (known?-memberv (car x) (cdr x))
+               (known?-notv-all-differentv (cdr x))))))
 
 (defun assert!-all-differentv (x)
   "Assert that all elements of X are different."
@@ -8626,7 +8627,7 @@ X2."
   (<=v . known?-<=v)
   (>v . known?->v)
   (>=v . known?->=v)
-  (/=v . known?/=v)
+  (/=v . known?-/=v)
   (funcallv . known?-funcallv)
   (applyv . known?-applyv)
   (equalv . known?-equalv)
