@@ -1982,29 +1982,33 @@ contexts even though they may appear inside a SCREAMER::DEFUN.") args))
     (let ((segments (reverse segments))
           (dummy-argument (gensym "DUMMY-"))
           (other-arguments (gensym "OTHER-")))
-      ;; needs work: The closures created by LABELS functions aren't declared to
-      ;;             have DYNAMIC-EXTENT since I don't know how to do this in
-      ;;             Common Lisp.
-      `(labels ,(mapcar
-                 #'(lambda (segment)
-                     (let ((next (rest (member segment segments :test #'eq))))
-                       `(,(first segment)
-                          (&optional ,dummy-argument &rest ,other-arguments)
-                          (declare (ignore ,dummy-argument ,other-arguments))
-                          ,(cps-convert-progn
-                            (reverse (rest segment))
-                            (if next `#',(first (first next)) continuation)
-                            (if next '() types)
-                            (or next value?)
-                            environment))))
-                 (rest segments))
-         ,(let ((next (rest segments)))
-               (cps-convert-progn
-                (reverse (rest (first segments)))
-                (if next `#',(first (first next)) continuation)
-                (if next '() types)
-                (or next value?)
-                environment))))))
+      ;; Add DYNAMIC-EXTENT declarations for LABELS functions
+      ;; This enables stack allocation instead of heap allocation for closures
+      (let ((function-names (mapcar #'first (rest segments))))
+        `(labels ,(mapcar
+                   #'(lambda (segment)
+                       (let ((next (rest (member segment segments :test #'eq))))
+                         `(,(first segment)
+                            (&optional ,dummy-argument &rest ,other-arguments)
+                            (declare (ignore ,dummy-argument ,other-arguments))
+                            ,(cps-convert-progn
+                              (reverse (rest segment))
+                              (if next `#',(first (first next)) continuation)
+                              (if next '() types)
+                              (or next value?)
+                              environment))))
+                   (rest segments))
+           ;; Add DYNAMIC-EXTENT declaration for all generated functions
+           ,@(when (and function-names *dynamic-extent?*)
+               `((declare (dynamic-extent ,@(mapcar (lambda (name) `#',name) 
+                                                   function-names)))))
+           ,(let ((next (rest segments)))
+                 (cps-convert-progn
+                  (reverse (rest (first segments)))
+                  (if next `#',(first (first next)) continuation)
+                  (if next '() types)
+                  (or next value?)
+                  environment)))))))
 
 (defun-compile-time cps-convert-local-setf/setq
     (arguments continuation types value? environment)
@@ -2760,6 +2764,140 @@ N-VALUES is analogous to ALL-VALUES, but collects only the first N solutions."
              (when (>= ,number ,n) (return-from n-values ,values)))))
        ,values)))
 
+(defmacro-compile-time nested-for-effects (&rest bodies &environment environment)
+  "Variant of FOR-EFFECTS macro to create N-level nested search from list of bodies.
+  
+BODIES: Variable number of nondeterministic expressions in nesting order
+        (nested-search body1 body2 body3 ... bodyN)
+        
+Nesting Structure:
+- body1: Outermost level (solved first)
+- body2: Nested inside body1 (solved for each body1 solution)  
+- body3: Nested inside body2 (solved for each body1+body2 combination)
+- bodyN: Innermost level (solved for each body1+...+bodyN-1 combination)
+
+Returns: NIL (like FOR-EFFECTS)
+
+Backtracking Order:
+1. Innermost (bodyN) fails first
+2. Tries next bodyN for same outer context
+3. When bodyN exhausted, backtracks to bodyN-1
+4. Continues outward until all combinations explored"
+
+  ;; Generate variable names for each nesting level
+  (let ((level-vars (loop for i from 1 to (length bodies)
+                         collect (gensym (format nil "L~A-" i)))))
+    
+    ;; Recursive function to build nested choice-point structure
+    (labels ((build-nested-structure (remaining-bodies remaining-vars depth)
+               (if (null remaining-bodies)
+                   ;; Base case: all bodies processed, return collected results
+                   `(list ,@level-vars)
+                   
+                   ;; Recursive case: wrap current body in choice-point
+                   (let ((current-body (first remaining-bodies))
+                         (current-var (first remaining-vars)))
+                     `(choice-point
+                       ,(let ((*nondeterministic-context?* t))
+                          (cps-convert-progn
+                           `((let ((,current-var ,current-body))
+                               
+                               ;; Recursively build next inner level
+                               ,(build-nested-structure (rest remaining-bodies) 
+                                                       (rest remaining-vars)
+                                                       (1+ depth))))
+                           '#'fail nil nil environment)))))))
+      
+      ;; Handle edge cases
+      (cond 
+        ;; No bodies provided
+        ((null bodies) 
+         `'())
+        
+        ;; Single body (no nesting needed)
+        ((= (length bodies) 1)
+         `(list ,(first bodies)))
+        
+        ;; Multiple bodies (build nested structure)
+        (t 
+         (build-nested-structure bodies level-vars 1))))))
+
+(defmacro-compile-time nested-one-value (&rest bodies &environment environment)
+  "Get first solution from NESTED-FOR-EFFECTS."
+  (let ((level-vars (loop for i from 1 to (length bodies)
+                         collect (gensym (format nil "L~A-" i)))))
+    
+    (labels ((build-nested-one (remaining-bodies remaining-vars depth)
+               (if (null remaining-bodies)
+                   ;; Base case: return first complete solution found
+                   `(return-from nested-search-one (list ,@level-vars))
+                   
+                   ;; Recursive case: wrap current body in choice-point
+                   (let ((current-body (first remaining-bodies))
+                         (current-var (first remaining-vars)))
+                     `(choice-point
+                       ,(let ((*nondeterministic-context?* t))
+                          (cps-convert-progn
+                           `((let ((,current-var ,current-body))
+                               
+                               ;; Continue to next level
+                               ,(build-nested-one (rest remaining-bodies) 
+                                                 (rest remaining-vars)
+                                                 (1+ depth))))
+                           '#'fail nil nil environment)))))))
+      
+      `(block nested-search-one
+         ,(if (null bodies)
+              `nil
+              (build-nested-one bodies level-vars 1))
+         nil))))
+
+(defmacro-compile-time nested-all-values (&rest bodies &environment environment)
+  "Get all solutions from NESTED-FOR-EFFECTS."
+  (let ((solutions (gensym "SOLUTIONS"))
+        (last-cons (gensym "LAST-CONS"))
+        (level-vars (loop for i from 1 to (length bodies)
+                         collect (gensym (format nil "L~A-" i)))))
+    
+    (labels ((build-nested-all (remaining-bodies remaining-vars depth)
+               (if (null remaining-bodies)
+                   ;; Base case: collect this complete solution
+                   `(let ((solution (list ,@level-vars)))
+                      ;; Add to solutions list using GLOBAL
+                      (global (if (null ,solutions)
+                                  (setf ,last-cons (list solution)
+                                        ,solutions ,last-cons)
+                                  (setf (rest ,last-cons) (list solution)
+                                        ,last-cons (rest ,last-cons))))
+                      ;; Force backtracking to find more solutions
+                      (fail))
+                   
+                   ;; Recursive case: wrap current body in choice-point
+                   (let ((current-body (first remaining-bodies))
+                         (current-var (first remaining-vars)))
+                     `(choice-point
+                       ,(let ((*nondeterministic-context?* t))
+                          (cps-convert-progn
+                           `((let ((,current-var ,current-body))
+                               
+                               ;; Continue to next level
+                               ,(build-nested-all (rest remaining-bodies) 
+                                                 (rest remaining-vars)
+                                                 (1+ depth))))
+                           '#'fail nil nil environment)))))))
+      
+      `(let ((,solutions '())
+             (,last-cons nil))
+         ,(if (null bodies)
+              `'()
+              `(progn
+                 (choice-point
+                  ,(let ((*nondeterministic-context?* t))
+                     (cps-convert-progn
+                      `(,(build-nested-all bodies level-vars 1))
+                      '#'fail nil nil environment)))
+                 ,solutions))))))
+
 ;;; In classic Screamer TRAIL is unexported and UNWIND-TRAIL is exported. This
 ;;; doesn't seem very safe or sane: while users could conceivably want to use
 ;;; TRAIL to track unwinds, using UNWIND-TRAIL seems inherently dangerous
@@ -3030,6 +3168,26 @@ function."
                         sequences)))
       (cons (apply-nondeterministic function current)
             (map-nondeterministic-internal function rest)))))
+
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (declaim (inline sequencep)))
+(defun-compile-time sequencep (x)
+  "Returns T if X is a sequence, NIL otherwise."
+ (typep x 'sequence))
+
+(defun generic-equal (x y)
+;; note: Should find a better name for this.
+  "Compares two objects for equality considering their types and structures."
+ (the boolean
+  (typecase x
+    (symbol      (and (symbolp y) (eq x y)))
+    (number      (and (numberp y) (eql x y)))
+    (string      (and (stringp y) (string= x y)))
+    (vector      (and (vectorp y) (equalp x y)))
+    (array       (and (arrayp y) (equalp x y)))
+    (cons        (and (consp y) (equal x y)))
+    (hash-table  (and (hash-table-p y) (equalp x y)))
+    (t           (eql x y)))))
 
 (defun map-nondeterministic (result-type function sequence &rest sequences)
  (unless (subtypep result-type 'sequence)
@@ -3512,7 +3670,7 @@ either a list or a vector."
          (fail)
          variable)))
 
-(cl:defun a-ratio (&optional max-denominator)
+(defun a-ratio (&optional max-denominator)
   "Nondeterministically returns a ratio (noninteger rational) in the interval (-inf, +inf)
   with a maximum denominator [MAX-DENOMINATOR]. All ratios are reduced and have denominator ≤ MAX-DENOMINATOR.
   Results are returned in order of increasing denominator. This function may not terminate, as the set of ratios is infinite."
@@ -3619,8 +3777,6 @@ Forward Checking, or :AC for Arc Consistency. Default is :GFC.")
   (possibly-noninteger-rational? t :type boolean)
   (max-denom nil :type (or null integer))
   (possibly-noninteger-real? t :type boolean)
-  ;; note: for implementation of gaussian-integers
-  ;(possibly-gaussian-integer? t)
   (possibly-nonreal-number? t :type boolean)
   (possibly-boolean? t :type boolean)
   (possibly-nonboolean-nonnumber? t :type boolean)
@@ -3640,8 +3796,6 @@ Forward Checking, or :AC for Arc Consistency. Default is :GFC.")
    (possibly-noninteger-rational? :accessor variable-possibly-noninteger-rational? :initform t :type boolean)
    (max-denom :accessor variable-max-denom :initform nil :type (or null integer))
    (possibly-noninteger-real? :accessor variable-possibly-noninteger-real? :initform t :type boolean)
-   ;; note: for implementation of gaussian-integers
-   ;(possibly-gaussian-integer? :accessor variable-possibly-gaussian-integer? :initform t)
    (possibly-nonreal-number? :accessor variable-possibly-nonreal-number? :initform t :type boolean)
    (possibly-boolean? :accessor variable-possibly-boolean? :initform t :type boolean)
    (possibly-nonboolean-nonnumber? :accessor variable-possibly-nonboolean-nonnumber? :initform t :type boolean)
@@ -3684,21 +3838,6 @@ Forward Checking, or :AC for Arc Consistency. Default is :GFC.")
 (defun-compile-time ratiop (x)
   "Returns true iff X is a ratio."
  (typep x 'ratio))
-
-(eval-when (:compile-toplevel :load-toplevel :execute)
-  (declaim (inline sequencep)))
-(defun-compile-time sequencep (x)
-  "Returns T if X is a sequence, NIL otherwise."
- (typep x 'sequence))
-
-;; note: for implementation of gaussian integers
-;(defun gaussian-integerp (x)
-;  "Returns true iff X is a Gaussian integer, i.e., a complex number with both
-; real and imaginary parts that are integers."
-;  (typecase x
-;    (complex (and (integerp (realpart x))
-;                  (integerp (imagpart x))))
-;    (otherwise nil)))
 
 (eval-when (:compile-toplevel :load-toplevel :execute)
   (declaim (inline canonical-type)))
@@ -3771,82 +3910,6 @@ Return NIL if any element is a number, boolean, or types differ."
           (cons (eliminate-variables (car x)) (eliminate-variables (cdr x)))
           (eliminate-variables (variable-value x)))
       x))
-
-(defun print-variable (x stream print-level)
-   (declare (ignore print-level))
-  (let ((name (variable-name x))
-        (x (value-of x)))
-    (cond
-      ((variable? x)
-       (if (and (not (eq (variable-enumerated-domain x) t))
-                (not (null (variable-enumerated-antidomain x))))
-           (error "This shouldn't happen"))
-       (format stream "[~S" name x)
-      (format stream "~A"
-        (cond
-          ((and (variable-possibly-nonboolean-nonnumber? x)
-                (variable-type x))
-           (format nil " ~A" (variable-type x)))
-          ((variable-boolean? x) " Boolean")
-          ((variable-real? x)
-          (cond
-            ((variable-rational? x)
-              (cond
-                ((variable-integer? x) " integer")
-                ((variable-ratio? x) " noninteger-rational")
-                (t " rational")))
-            (t
-              (cond
-                ((variable-noninteger? x)
-                 (if (variable-nonrational? x)
-                      " nonrational-real" " noninteger-real"))
-                (t " real")))))
-                     ((variable-number? x)
-                      (cond ((variable-nonreal? x) " nonreal-number")
-                            ((variable-noninteger? x) " noninteger-number")
-                            ((variable-nonrational? x) " nonrational-number")
-                            ((variable-rational? x) " rational-number")
-                            (t " number")))
-                     ((variable-nonnumber? x) " nonnumber")
-                     ((variable-nonreal? x) " nonreal")
-                     ((variable-noninteger? x) " noninteger")
-                     (t "")))
-       (when (variable-real? x)
-         (cond ((and (variable-lower-bound x) (variable-upper-bound x))
-                (format stream " ~D:~D"
-                        (variable-lower-bound x) (variable-upper-bound x)))
-               ((variable-lower-bound x)
-                (format stream " ~D:" (variable-lower-bound x)))
-               ((variable-upper-bound x)
-                (format stream " :~D" (variable-upper-bound x)))))
-       (when (and (variable-rational? x)
-                  (variable-possibly-noninteger-rational? x)
-                  (integerp (variable-max-denom x)))
-         (format stream " max-denom:~D" (variable-max-denom x)))
-       (when (and (not (eq (variable-enumerated-domain x) t))
-                  (not (variable-boolean? x)))
-         (format stream " enumerated-domain:~S"
-                 (variable-enumerated-domain x)))
-       (when (not (null (variable-enumerated-antidomain x)))
-         (format stream " enumerated-antidomain:~S"
-                 (variable-enumerated-antidomain x)))
-       (format stream "]"))
-      (t (cond ((or (booleanp x) (numberp x)) (format stream "~S" x))
-               (t (format stream "[~S value:~S]" name x)))))))
-
-(defun make-variable (&optional (name nil name?))
-  "Creates and returns a new variable. Variables are assigned a name
-which is only used to identify the variable when it is printed. If the
-parameter NAME is given then it is assigned as the name of the
-variable. Otherwise, a unique name is assigned. The parameter NAME can
-be any Lisp object."
-  (let ((variable
-         #-screamer-clos
-          (make-variable-internal :name (if name? name (incf *name*)))
-          #+screamer-clos
-          (make-instance 'variable :name (if name? name (incf *name*)))))
-    (setf (variable-value variable) variable)
-    variable))
 
 (eval-when (:compile-toplevel :load-toplevel :execute)
   (declaim (inline variable-integer?)))
@@ -4051,6 +4114,82 @@ be any Lisp object."
               (variable-possibly-noninteger-real? x)
               (variable-possibly-integer? x)
               (variable-possibly-noninteger-rational? x)))))
+
+(defun print-variable (x stream print-level)
+   (declare (ignore print-level))
+  (let ((name (variable-name x))
+        (x (value-of x)))
+    (cond
+      ((variable? x)
+       (if (and (not (eq (variable-enumerated-domain x) t))
+                (not (null (variable-enumerated-antidomain x))))
+           (error "This shouldn't happen"))
+       (format stream "[~S" name)
+      (format stream "~A"
+        (cond
+          ((and (variable-possibly-nonboolean-nonnumber? x)
+                (variable-type x))
+           (format nil " ~A" (variable-type x)))
+          ((variable-boolean? x) " Boolean")
+          ((variable-real? x)
+          (cond
+            ((variable-rational? x)
+              (cond
+                ((variable-integer? x) " integer")
+                ((variable-ratio? x) " noninteger-rational")
+                (t " rational")))
+            (t
+              (cond
+                ((variable-noninteger? x)
+                 (if (variable-nonrational? x)
+                      " nonrational-real" " noninteger-real"))
+                (t " real")))))
+                     ((variable-number? x)
+                      (cond ((variable-nonreal? x) " nonreal-number")
+                            ((variable-noninteger? x) " noninteger-number")
+                            ((variable-nonrational? x) " nonrational-number")
+                            ((variable-rational? x) " rational-number")
+                            (t " number")))
+                     ((variable-nonnumber? x) " nonnumber")
+                     ((variable-nonreal? x) " nonreal")
+                     ((variable-noninteger? x) " noninteger")
+                     (t "")))
+       (when (variable-real? x)
+         (cond ((and (variable-lower-bound x) (variable-upper-bound x))
+                (format stream " ~D:~D"
+                        (variable-lower-bound x) (variable-upper-bound x)))
+               ((variable-lower-bound x)
+                (format stream " ~D:" (variable-lower-bound x)))
+               ((variable-upper-bound x)
+                (format stream " :~D" (variable-upper-bound x)))))
+       (when (and (variable-rational? x)
+                  (variable-possibly-noninteger-rational? x)
+                  (integerp (variable-max-denom x)))
+         (format stream " max-denom:~D" (variable-max-denom x)))
+       (when (and (not (eq (variable-enumerated-domain x) t))
+                  (not (variable-boolean? x)))
+         (format stream " enumerated-domain:~S"
+                 (variable-enumerated-domain x)))
+       (when (not (null (variable-enumerated-antidomain x)))
+         (format stream " enumerated-antidomain:~S"
+                 (variable-enumerated-antidomain x)))
+       (format stream "]"))
+      (t (cond ((or (booleanp x) (numberp x)) (format stream "~S" x))
+               (t (format stream "[~S value:~S]" name x)))))))
+
+(defun make-variable (&optional (name nil name?))
+  "Creates and returns a new variable. Variables are assigned a name
+which is only used to identify the variable when it is printed. If the
+parameter NAME is given then it is assigned as the name of the
+variable. Otherwise, a unique name is assigned. The parameter NAME can
+be any Lisp object."
+  (let ((variable
+         #-screamer-clos
+          (make-variable-internal :name (if name? name (incf *name*)))
+          #+screamer-clos
+          (make-instance 'variable :name (if name? name (incf *name*)))))
+    (setf (variable-value variable) variable)
+    variable))
 
 (defun variable-true? (x) (eq (variable-value x) t))
 
@@ -5948,7 +6087,7 @@ Otherwise returns the value of X."
         (fail))))
 
 (defun =-rule (x y)
-(declare (type variable x y))
+ (declare (type variable x y))
   (cond
     ;; note: I forget why +-RULE *-RULE MIN-RULE and MAX-RULE must perform the
     ;;       check in the second COND clause irrespective of whether the first
@@ -5966,7 +6105,10 @@ Otherwise returns the value of X."
          (when min-denom
            (restrict-max-denom! x min-denom)
            (restrict-max-denom! y min-denom)))))
-     ((and (not (variable? x)) (not (variable? y)) (/= x y)) (fail)))
+     ((and (not (variable? (value-of x)))
+           (not (variable? (value-of y)))
+           (/= (value-of x) (value-of y)))
+      (fail)))
   (let ((x (value-of x))
         (y (value-of y)))
   (cond ((and (not (variable? x))
@@ -5981,7 +6123,6 @@ Otherwise returns the value of X."
               (fail)))
         ((and (variable? x)
               (variable? y))
-                ;; note: the case where both X and Y have enumerated-domains
          (cond ((not (eq (variable-enumerated-domain x) t))
                 (if (and (not (eq (variable-enumerated-domain y) t))
                          (<= (domain-size (list x y)) *maximum-discretization-range*))
@@ -6004,9 +6145,6 @@ Otherwise returns the value of X."
                                                     (member element intersection-of-domains :test #'=))
                                                 (variable-enumerated-domain y)))
                               (run-noticers y))))
-                    ;; note: the case where X has an enumerated-domain
-                    ;; Restricts the domain of Y to be compatible with
-                    ;; the variable type of Y.
                     (when (<= (domain-size x) *maximum-discretization-range*)
                     (let ((x-domain (variable-enumerated-domain x)))
                     (restrict-enumerated-domain!
@@ -7659,16 +7797,6 @@ sufficient hooks for the user to define her own force functions.)"
                  (deep-bounded? (cdr x))))
       (otherwise t)))))
 
-(defun deep-ground? (x)
-  (the boolean
-  (let ((x (value-of x)))
-    (typecase x
-      (null t)
-      (variable (ground? x))
-      (cons (and (deep-ground? (car x))
-                 (deep-ground? (cdr x))))
-      (otherwise t)))))
-
 (defun deep-finite-domain? (x)
   (the boolean
   (let ((x (value-of x)))
@@ -7684,20 +7812,6 @@ sufficient hooks for the user to define her own force functions.)"
 (defun enumerated-domain-p (x)
  (and (not (eq (variable-enumerated-domain x) t))
       (listp (variable-enumerated-domain x))))
-
-(defun generic-equal (x y)
-;; note: Should find a better name for this.
-  "Compares two objects for equality considering their types and structures."
- (the boolean
-  (typecase x
-    (symbol      (and (symbolp y) (eq x y)))
-    (number      (and (numberp y) (eql x y)))
-    (vector      (and (vectorp y) (equalp x y)))
-    (array       (and (arrayp y) (equalp x y)))
-    (cons        (and (consp y) (equal x y)))
-    (string      (and (stringp y) (string= x y)))
-    (hash-table  (and (hash-table-p y) (equalp x y)))
-    (t           (eql x y)))))
 
 (defun known?-constraint (f polarity? x)
   (let ((f (value-of f)))
@@ -9453,8 +9567,8 @@ directly nested in a call to ASSERT!, are similarly transformed."
                          arguments)
                    (cons (cdr (assoc (first form)
                                      (if polarity?
-                                         *screamer-assert!-functions*
-                                         *screamer-assert!-notv-functions*)
+                                         *screamer-assert!-notv-functions*
+                                         *screamer-assert!-functions*)
                                      :test #'eq))
                          arguments))))
         (t (let ((argument (gensym "ARGUMENT-")))
