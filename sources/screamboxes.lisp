@@ -12,7 +12,7 @@
 
 (defmethod screamerboxes-p ((self screamerboxes)) t)
 (defmethod screamerboxes-p ((self t)) nil)
-			 
+             
 (defmethod omNG-box-value ((self screamerboxes) &optional (numout 0))
    "Eval the output indexed by 'numout' for the box 'self'. In this method we call the generic function reference of 'self'."
    (handler-bind ((error #'(lambda (c)
@@ -40,7 +40,7 @@
              (progn
                (when (and (EditorFrame (car themethod)) (not (compiled? (car themethod))))
                  (modify-genfun (EditorFrame (car themethod))))
-				 (setf rep (multiple-value-list (eval `(,(intern (string (reference self)) :s) ,.qargs)))))			   
+                 (setf rep (multiple-value-list (eval `(,(intern (string (reference self)) :s) ,.qargs)))))            
             )
            (when (equal (allow-lock self) "&")
              (setf (ev-once-p self) t)
@@ -56,7 +56,7 @@
  (multiple-value-bind (nesymbs args) (get-args-eval-currry self)
   (eval `#'(lambda ,(reverse nesymbs)
             (,symbol ,.args)))))
-										 
+                                         
 (defmethod curry-lambda-code ((self screamerboxes) symbol)
     "Lisp code generetion for a box in lambda mode."
 
@@ -75,14 +75,14 @@
                                         (list (value input) a) 
                                       (list a))))
                               (inputs self))))
-							  				 
+                                             
             `#'(lambda ,(reverse nesymbs)
                 (,symbol ,.args)))
 
         (setf *lambda-context* oldlambdacontext)
        
      )))
-	 			
+                
 (defmethod gen-code-call ((self screamerboxes) &optional args)
    (let ((screamerfun `,(intern (string (reference self)) :s)))     
      `(,screamerfun ,.(decode self))))
@@ -129,7 +129,7 @@
 
 (defmethod screamer-valuation-boxes-p ((self screamer-valuation-boxes)) t)
 (defmethod screamer-valuation-boxes-p ((self t)) nil)
-					 
+                     
 (defmethod omNG-box-value ((self screamer-valuation-boxes) &optional (numout 0))
    "Eval the output indexed by 'numout' for the box 'self'. In this method we call the generic function reference of 'self'."
    (handler-bind ((error #'(lambda (c)
@@ -141,8 +141,8 @@
                                (om-abort)))))
      (cond
       ((equal (allow-lock self) "l")
-  	   (progn (om-message-dialog (format nil "~S DOES NOT WORK IN LAMBDA MODE." (string (reference self))))
-  	          (om-abort))) 
+       (progn (om-message-dialog (format nil "~S DOES NOT WORK IN LAMBDA MODE." (string (reference self))))
+              (om-abort))) 
        ;(setf (value self) (list (special-lambda-value self (intern (string (reference self)) :s)))) ;;;test with :s package
        ;(car (value self)))
       ((or ;(equal (allow-lock self) "l") 
@@ -150,50 +150,50 @@
            (and (equal (allow-lock self) "x") (value self)) 
            (and (equal (allow-lock self) "&") (ev-once-p self))) (call-next-method))
       (t (let ((theinputs (loop for i in (inputs self) ;<=== FROM OMOut (gen-code method -> in-out-boxes.lisp)
-	                                 collect (connected? i)))
-				(oldletlist *let-list*)
-				(oldlambdacontext *lambda-context*)
-			    themethod code qargs form rep)
-				;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-				(setf *let-list* nil) ;<=== TEST (RESET *LET-LIST* BEFORE CODE GNERATION)
-				
-				(setf code (loop for box in theinputs
-				            collect (if box (gen-code (first box) (second box)) 'nil)))			
-		   					 
-	            (setf qargs (loop for val in code collect (if (or (symbolp val) (omlistp val)) `',val val)))
-					
-				(setf themethod (compute-applicable-methods (fdefinition (reference self)) qargs))
-				
-				;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-	            (if (null themethod)
-	                (progn (dialog-message (string+ "no method is defined for inputs in box " (name self)))
-	                       (abort))
+                                     collect (connected? i)))
+                (oldletlist *let-list*)
+                (oldlambdacontext *lambda-context*)
+                themethod code qargs form rep)
+                ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+                (setf *let-list* nil) ;<=== TEST (RESET *LET-LIST* BEFORE CODE GNERATION)
+                
+                (setf code (loop for box in theinputs
+                            collect (if box (gen-code (first box) (second box)) 'nil)))         
+                             
+                (setf qargs (loop for val in code collect (if (or (symbolp val) (omlistp val)) `',val val)))
+                    
+                (setf themethod (compute-applicable-methods (fdefinition (reference self)) qargs))
+                
+                ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+                (if (null themethod)
+                    (progn (dialog-message (string+ "no method is defined for inputs in box " (name self)))
+                           (abort))
                     (progn
                      (when (and (EditorFrame (car themethod)) (not (compiled? (car themethod))))
                       (modify-genfun (EditorFrame (car themethod))))
-					(setf form (let ((valuation (string (reference self))))
-					            (cond ((or (equal valuation "FOR-EFFECTS") 
-										   (equal valuation "ALL-VALUES") 
-									       (equal valuation "ONE-VALUE")
-									       (equal valuation "PRINT-VALUES")
-										   (equal valuation "POSSIBLY?")
-										   (equal valuation "NECESSARILY?"))
-										  `(,(intern (string (reference self)) :s)
-										    (let* ,(reverse *let-list*) ,.qargs)))	
-									  ((or (equal valuation "N-VALUES") 
-									       (equal valuation "ITH-VALUE")) 
-										  `(,(intern (string (reference self)) :s) ,(car qargs)
-										    (let* ,(reverse *let-list*) ,.(cdr qargs))))
-									 (t ;"BEST-VALUE"
-									  `(let* ,(reverse *let-list*)
-									  (,(intern (string (reference self)) :s) ,.qargs))))))					   
-			   ;(print form); <=== check code
-			   (setf rep (multiple-value-list (eval form)))
-		       ;(setf rep (multiple-value-list (eval `(let* ,(reverse *let-list*) 
-			   ;	                                      (,(intern (string (reference self)) :s) ,.qargs)))))
-			))
-		   (setf *let-list* oldletlist)
-		   (setf *lambda-context* oldlambdacontext)
+                    (setf form (let ((valuation (string (reference self))))
+                                (cond ((or (equal valuation "FOR-EFFECTS") 
+                                           (equal valuation "ALL-VALUES") 
+                                           (equal valuation "ONE-VALUE")
+                                           (equal valuation "PRINT-VALUES")
+                                           (equal valuation "POSSIBLY?")
+                                           (equal valuation "NECESSARILY?"))
+                                          `(,(intern (string (reference self)) :s)
+                                            (let* ,(reverse *let-list*) ,.qargs)))  
+                                      ((or (equal valuation "N-VALUES") 
+                                           (equal valuation "ITH-VALUE")) 
+                                          `(,(intern (string (reference self)) :s) ,(car qargs)
+                                            (let* ,(reverse *let-list*) ,.(cdr qargs))))
+                                     (t ;"BEST-VALUE"
+                                      `(let* ,(reverse *let-list*)
+                                      (,(intern (string (reference self)) :s) ,.qargs))))))                    
+               ;(print form); <=== check code
+               (setf rep (multiple-value-list (eval form)))
+               ;(setf rep (multiple-value-list (eval `(let* ,(reverse *let-list*) 
+               ;                                          (,(intern (string (reference self)) :s) ,.qargs)))))
+            ))
+           (setf *let-list* oldletlist)
+           (setf *lambda-context* oldlambdacontext)
            (when (equal (allow-lock self) "&")
              (setf (ev-once-p self) t)
              (setf (value self) rep))
@@ -202,7 +202,7 @@
           (progn (setf (value self) rep) ;;; new for om-backtrack in OM 7.2
                (nth numout rep))))))
              )
-			 
+             
 (defmethod gen-code-call ((self screamer-valuation-boxes) &optional args)
  (let ((screamerfun `,(intern (string (reference self)) :s)))     
   `(,screamerfun ,.(decode self))))
@@ -210,35 +210,35 @@
 (defmethod gen-valuation-code ((self screamer-valuation-boxes) numout)
 ;note: THIS IS USED IN COMPILE-PATCH
 (let ((theinputs (loop for i in (inputs self)
-	                                 collect (connected? i)))
-	(oldletlist *let-list*)
-	(oldlambdacontext *lambda-context*)
+                                     collect (connected? i)))
+    (oldletlist *let-list*)
+    (oldlambdacontext *lambda-context*)
     code qargs form)
-	(setf *let-list* nil)	
-	(setf code (loop for box in theinputs
-	            collect (if box (gen-code (first box) (second box)) 'nil)))							 
+    (setf *let-list* nil)   
+    (setf code (loop for box in theinputs
+                collect (if box (gen-code (first box) (second box)) 'nil)))                          
     (setf qargs (loop for val in code collect (if (or (symbolp val) (omlistp val)) `',val val)))
 
     (setf form (let ((valuation (string (reference self))))
-		        (cond ((or (equal valuation "FOR-EFFECTS") 
-						   (equal valuation "ALL-VALUES") 
-						   (equal valuation "ONE-VALUE")
-						   (equal valuation "PRINT-VALUES")
-						   (equal valuation "POSSIBLY?")
-						   (equal valuation "NECESSARILY?"))
-					      `(,(intern (string (reference self)) :s)
-						   (let* ,(reverse *let-list*) ,.qargs)))	
-				     ((or (equal valuation "N-VALUES") 
-						  (equal valuation "ITH-VALUE")) 
-						   `(,(intern (string (reference self)) :s) ,(car code)
-						     (let* ,(reverse *let-list*) ,.(cdr qargs))))
-				     (t ;"BEST-VALUE"
-					  `(let* ,(reverse *let-list*)
-					    (,(intern (string (reference self)) :s) ,.qargs))))))
+                (cond ((or (equal valuation "FOR-EFFECTS") 
+                           (equal valuation "ALL-VALUES") 
+                           (equal valuation "ONE-VALUE")
+                           (equal valuation "PRINT-VALUES")
+                           (equal valuation "POSSIBLY?")
+                           (equal valuation "NECESSARILY?"))
+                          `(,(intern (string (reference self)) :s)
+                           (let* ,(reverse *let-list*) ,.qargs)))   
+                     ((or (equal valuation "N-VALUES") 
+                          (equal valuation "ITH-VALUE")) 
+                           `(,(intern (string (reference self)) :s) ,(car code)
+                             (let* ,(reverse *let-list*) ,.(cdr qargs))))
+                     (t ;"BEST-VALUE"
+                      `(let* ,(reverse *let-list*)
+                        (,(intern (string (reference self)) :s) ,.qargs))))))
    (setf *let-list* oldletlist)
-   (setf *lambda-context* oldlambdacontext)  	
+   (setf *lambda-context* oldlambdacontext)     
   form))
- 	
+    
 (defmethod gen-code ((self screamer-valuation-boxes) numout)
  "Generate Lisp code for the box 'self'."
  (let ((screamerfun `,(intern (string (reference self)) :s)))
@@ -250,8 +250,8 @@
     ((equal (allow-lock self) "o") 
      `',(reference self))
     ((equal (allow-lock self) "l")
-	(progn (om-message-dialog (format nil "~S DOES NOT WORK IN LAMBDA MODE." (string (reference self))))
-	       (om-abort)))
+    (progn (om-message-dialog (format nil "~S DOES NOT WORK IN LAMBDA MODE." (string (reference self))))
+           (om-abort)))
      ;(curry-lambda-code self screamerfun))
     (t  `(,screamerfun ,.(decode self))))))
 

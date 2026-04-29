@@ -27,7 +27,7 @@ width height) nil)
 
 (defmethod oa::om-resize-callback ((self non-deter-window) x y w h)
     (let* ((value (value-item self)))
-	;(print (list "resizef" x y w h))  
+    ;(print (list "resizef" x y w h))  
 (when value
         (om-set-view-size value (om-make-point (- w 40) (- h 40))))
     ))
@@ -72,7 +72,7 @@ width height) nil)
                                            :position :centered 
                                            :window-show nil
                                            :size (om-make-point 600 400) 
-                                           :bg-color (om-make-color 0.875 0.875 0.875)))	      
+                                           :bg-color (om-make-color 0.875 0.875 0.875)))          
               (om-make-view 'om-text-edit-view
                             :save-buffer-p t
                             :scrollbars :v
@@ -83,30 +83,30 @@ width height) nil)
 
     (om-add-subviews dialog value-item-view  
                      (om-make-dialog-item 'om-static-text (om-make-point 25 10) (om-make-point 420 20) "DO YOU WANT ANOTHER SOLUTION?")
-					 
+                     
                      (om-make-dialog-item 'om-button (om-make-point 250 5) (om-make-point 62 20) "No" 
                                           :di-action (om-dialog-item-act item
                                                       (let ((item item))
-													   (declare (ignore item))
-													   (om-return-from-modal-dialog dialog nil))))
+                                                       (declare (ignore item))
+                                                       (om-return-from-modal-dialog dialog nil))))
                      (om-make-dialog-item 'om-button (om-make-point 320 5) (om-make-point 58 18) "Yes" 
                                           :di-action (om-dialog-item-act item
                                                      (let ((item item))
-													  (declare (ignore item))
-													  (om-return-from-modal-dialog dialog t)))
+                                                      (declare (ignore item))
+                                                      (om-return-from-modal-dialog dialog t)))
                                           :default-button t))
  
   (if (scoreeditor-p value)
        (let ((score-class (class-name (class-of value)))) 
         (cond ((or (equal score-class 'poly)
-	                 (equal score-class 'multi-seq))
-		   (let* ((inside (inside value))
+                     (equal score-class 'multi-seq))
+           (let* ((inside (inside value))
                            (staves (mapcar #'correct-listener-staff inside)))
-		    (loop for staff in staves
-			     for x from 0
-			     do (setf (nth x (staff-sys (panel (editor dialog)))) (get-staff-system staff)))
-		    (update-panel (panel (editor dialog)))
-		    (non-deter-modal-dialog dialog)))			
+            (loop for staff in staves
+                 for x from 0
+                 do (setf (nth x (staff-sys (panel (editor dialog)))) (get-staff-system staff)))
+            (update-panel (panel (editor dialog)))
+            (non-deter-modal-dialog dialog)))           
                 (t (progn (change-system (panel (editor dialog)) (correct-listener-staff value)) 
                                (non-deter-modal-dialog dialog)))))
      (non-deter-modal-dialog dialog)

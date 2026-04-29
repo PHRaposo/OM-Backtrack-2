@@ -1287,27 +1287,6 @@ SYMBOL-MACRO-BINDINGS is a list of (name expansion) forms."
 ;;;  Other:
 ;;;   MACRO-CALL LAMBDA-CALL SYMBOL-CALL SETF-CALL
 
-(defun-compile-time contains-nondeterministic-call? (form)
-  "Check if FORM contains calls to nondeterministic functions (both built-in and user-defined)."
-  (let ((nondeterministic-functions
-         '(either fail a-boolean an-integer an-integer-above an-integer-below
-           an-integer-between a-member-of a-random-member-of a-rational-between
-           a-rational a-rational-above a-rational-below a-ratio a-ratio-between
-           a-ratio-above a-ratio-below)))
-    (cond
-      ((null form) nil)
-      ((atom form) nil)
-      ((and (symbolp (first form))
-            (or
-             ;; Check built-in nondeterministic functions
-             (member (first form) nondeterministic-functions)
-             ;; Check user-defined nondeterministic functions via function-record-table
-             (let ((record (gethash (first form) *function-record-table*)))
-               (and record (not (function-record-deterministic? record))))))
-       t)
-      (t (or (contains-nondeterministic-call? (car form))
-             (contains-nondeterministic-call? (cdr form)))))))
-
 (defun-compile-time walk
     (map-function reduce-function screamer? partial? nested? form environment)
   ;; needs work: Cannot walk MACROLET or special forms not in both CLtL1 and
@@ -1419,12 +1398,6 @@ SYMBOL-MACRO-BINDINGS is a list of (name expansion) forms."
      (walk-multiple-value-call-nondeterministic
       map-function reduce-function screamer? partial? nested? form environment))
     ((and partial? (eq (first form) 'full)) (walk-full map-function form))
-    ;; Detect LOOP with nondeterministic expressions
-     ((and (symbolp (first form))
-           (eq (first form) 'loop)
-           (contains-nondeterministic-call? form))
-      (error "Cannot (currently) handle LOOP with nondeterministic expressions: ~S"
-             form))
     ((and (symbolp (first form))
           (macro-function (first form) environment))
      (walk-macro-call
@@ -3630,6 +3603,12 @@ either a list or a vector."
 
 ;;; NONDETERMINISTIC RATIONAL NUMBERS
 
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (declaim (inline ratiop)))
+(defun-compile-time ratiop (x)
+  "Returns true iff X is a ratio."
+ (typep x 'ratio))
+
 ;;; Farey generators
   
 (eval-when (:compile-toplevel :load-toplevel :execute)
@@ -3770,6 +3749,28 @@ either a list or a vector."
      (let* ((step (/ 1 max-denom)))
       (* (ceiling (/ (rationalize x) step)) step)))))
 
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (declaim (inline strict-next-in-domain)))
+  
+(cl:defun strict-next-in-domain (x max-denom)
+  "Smallest rational with denominator <= max-denom strictly greater than x."
+  (if (and (ratiop x) (<= (denominator x) max-denom))
+      (farey-next-value x max-denom)
+      (let* ((step (/ 1 max-denom))
+             (result (* (ceiling (/ x step)) step)))
+        (if (integerp result) (+ result step) result))))
+
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (declaim (inline strict-prev-in-domain)))
+  
+(cl:defun strict-prev-in-domain (x max-denom)
+  "Greatest rational with denominator <= max-denom strictly less than x."
+  (if (and (ratiop x) (<= (denominator x) max-denom))
+      (farey-prev-value x max-denom)
+      (let* ((step (/ 1 max-denom))
+             (result (* (floor (/ x step)) step)))
+        (if (integerp result) (- result step) result))))
+        
 (cl:defun rationals-between (low high &optional max-denominator)
   "Return all reduced rationals in [low, high] with denominator <= max-denominator."
   (let* ((max-denom (or max-denominator 10))
@@ -3989,6 +3990,11 @@ Forward Checking, or :AC for Arc Consistency. Default is :GFC.")
 (defvar *maximum-random-domain-size* 88
   "The maximum size allowed for a random domain.")
 
+(defvar *max-denom* 1000000
+  " When non-NIL, RESTRICT-LOWER-BOUND!, RESTRICT-UPPER-BOUND! and RESTRICT-BOUNDS!
+discretize a REAL variable whose bounds become rational and whose range fits within
+SAFEST-FAREY-RANGE-SIZE under this denominator.")
+
 ;;; note: Enable this to use CLOS instead of DEFSTRUCT for variables.
 #+(or)
 (eval-when (:compile-toplevel :load-toplevel :execute)
@@ -4012,8 +4018,7 @@ Forward Checking, or :AC for Arc Consistency. Default is :GFC.")
   (possibly-boolean? t :type boolean)
   (possibly-nonboolean-nonnumber? t :type boolean)
   (lower-bound nil :type (or number null))
-  (upper-bound nil :type (or number null))
-  (type nil :type (or null symbol)))
+  (upper-bound nil :type (or number null)))
 
 #+screamer-clos
 (defclass variable ()
@@ -4031,8 +4036,7 @@ Forward Checking, or :AC for Arc Consistency. Default is :GFC.")
    (possibly-boolean? :accessor variable-possibly-boolean? :initform t :type boolean)
    (possibly-nonboolean-nonnumber? :accessor variable-possibly-nonboolean-nonnumber? :initform t :type boolean)
    (lower-bound :accessor variable-lower-bound :initform nil :type (or number null))
-   (upper-bound :accessor variable-upper-bound :initform nil :type (or number null))
-   (type :accessor variable-type :initform t :type (or null symbol))))
+   (upper-bound :accessor variable-upper-bound :initform nil :type (or number null))))
 
 #+screamer-clos
 (defmethod print-object ((variable variable) stream)
@@ -4063,51 +4067,6 @@ Forward Checking, or :AC for Arc Consistency. Default is :GFC.")
 (defun-compile-time booleanp (x)
   "Returns true iff X is T or NIL."
   (typep x 'boolean))
-
-(eval-when (:compile-toplevel :load-toplevel :execute)
-  (declaim (inline ratiop)))
-(defun-compile-time ratiop (x)
-  "Returns true iff X is a ratio."
- (typep x 'ratio))
-
-(eval-when (:compile-toplevel :load-toplevel :execute)
-  (declaim (inline canonical-type)))
-(defun-compile-time canonical-type (obj)
-;; note: All NON NUMBER VARIABLE types MUST be included here.
-;;       This list can be extended as needed.
-  (typecase obj
-    (number nil)
-    (null '(list symbol))
-    (list (if (null (cdr (last obj))) 'list 'cons))
-    (symbol 'symbol)
-    (string 'string)
-    (simple-vector 'vector)
-    (array 'array)
-    (hash-table 'hash-table)
-    (standard-object 'standard-object)
-    (character 'character)
-    (otherwise nil)))
-
-(defun-compile-time collect-type (seq)
-  "Return the canonical type if all elements in SEQ share
-the same nonnumber type.
-Return NIL if any element is a number, boolean, or types differ."
-;; note: TYPE here is an abbreviation for NON NUMBER, NON BOOLEAN types.
-(declare (type sequence seq))
-  (reduce (lambda (result elt)
-            (let ((type (canonical-type elt)))
-              (if (or (null type)
-                      (and result (cond ((atom result)
-                                         (if (atom type)
-                                             (not (eq result type))
-                                             (not (member result type :test #'eq))))
-                                        ((atom type)
-                                         (not (member type result :test #'eq))))))
-                  (return-from collect-type nil)
-                  (cond (result (if (listp type) result type))
-                        (t type)))))
-          seq
-          :initial-value nil))
 
 (eval-when (:compile-toplevel :load-toplevel :execute)
   (declaim (inline infinity-min)))
@@ -4348,19 +4307,15 @@ Return NIL if any element is a number, boolean, or types differ."
 
 (defun print-variable (x stream print-level)
    (declare (ignore print-level))
-  (let ((name (variable-name x))
-        (x (value-of x)))
+  (let ((x (value-of x)))
     (cond
       ((variable? x)
        (if (and (not (eq (variable-enumerated-domain x) t))
                 (not (null (variable-enumerated-antidomain x))))
            (error "This shouldn't happen"))
-       (format stream "[~S" name)
+       (format stream "[~S" (variable-name x))
       (format stream "~A"
         (cond
-          ((and (variable-possibly-nonboolean-nonnumber? x)
-                (variable-type x))
-           (format nil " ~A" (variable-type x)))
           ((variable-boolean? x) " Boolean")
           ((variable-real? x)
           (cond
@@ -4405,8 +4360,7 @@ Return NIL if any element is a number, boolean, or types differ."
          (format stream " enumerated-antidomain:~S"
                  (variable-enumerated-antidomain x)))
        (format stream "]"))
-      (t (cond ((or (booleanp x) (numberp x)) (format stream "~S" x))
-               (t (format stream "[~S value:~S]" name x)))))))
+      (t (format stream "~S" x)))))
 
 (defun make-variable (&optional (name nil name?))
   "Creates and returns a new variable. Variables are assigned a name
@@ -5008,11 +4962,8 @@ Otherwise returns the value of X."
           (local (setf (variable-possibly-nonreal-number? x) nil))
           (setf run? t))
         (when (variable-possibly-nonboolean-nonnumber? x)
-          (unless (or (eq (variable-type x) 'symbol)
-                      (eq (variable-type x) 'list))
-           (local (if (variable-type x) (setf (variable-type x) nil))
-                  (setf (variable-possibly-nonboolean-nonnumber? x) nil)))
-           (setf run? t))
+          (local (setf (variable-possibly-nonboolean-nonnumber? x) nil))
+          (setf run? t))
         (when (variable-possibly-noninteger-rational? x)
           (local (setf (variable-possibly-noninteger-rational? x) nil))
           (setf run? t))
@@ -5114,8 +5065,19 @@ Otherwise returns the value of X."
               (set-enumerated-domain!
                x (rationals-between lower-bound (variable-upper-bound x) (variable-max-denom x)))))
           ((variable-real? x)
-           (if (zerop (- (variable-upper-bound x) (variable-lower-bound x)))
-               (set-enumerated-domain! x (list (variable-lower-bound x))))))))
+           (cond
+             ((zerop (- (variable-upper-bound x) (variable-lower-bound x)))
+              (set-enumerated-domain! x (list (variable-lower-bound x))))
+             ((and *max-denom*
+                   *maximum-discretization-range*
+                   (rationalp (variable-lower-bound x))
+                   (rationalp (variable-upper-bound x))
+                   (<= (- (variable-upper-bound x) (variable-lower-bound x))
+                       (safest-farey-range-size *maximum-discretization-range* *max-denom*)))
+              (set-enumerated-domain!
+                x (rationals-between (variable-lower-bound x)
+                                     (variable-upper-bound x)
+                                     *max-denom*))))))))
          ((some #'(lambda (element) (< element lower-bound))
                    (variable-enumerated-domain x))
              ;; note: Could do less consing if had LOCAL DELETE-IF.
@@ -5178,8 +5140,19 @@ Otherwise returns the value of X."
                   (set-enumerated-domain!
                     x (rationals-between (variable-lower-bound x) upper-bound (variable-max-denom x)))))
               ((variable-real? x)
-               (if (zerop (- (variable-upper-bound x) (variable-lower-bound x)))
-                   (set-enumerated-domain! x (list (variable-lower-bound x))))))))
+               (cond
+                 ((zerop (- (variable-upper-bound x) (variable-lower-bound x)))
+                  (set-enumerated-domain! x (list (variable-lower-bound x))))
+                 ((and *max-denom*
+                       *maximum-discretization-range*
+                       (rationalp (variable-lower-bound x))
+                       (rationalp (variable-upper-bound x))
+                       (<= (- (variable-upper-bound x) (variable-lower-bound x))
+                           (safest-farey-range-size *maximum-discretization-range* *max-denom*)))
+                  (set-enumerated-domain!
+                    x (rationals-between (variable-lower-bound x)
+                                         (variable-upper-bound x)
+                                         *max-denom*))))))))
       ((some #'(lambda (element) (> element upper-bound))
               (variable-enumerated-domain x))
         ;; note: Could do less consing if had LOCAL DELETE-IF.
@@ -5274,8 +5247,19 @@ Otherwise returns the value of X."
                                                (variable-upper-bound x)
                                                (variable-max-denom x)))))
                       ((variable-real? x)
-                        (if (zerop (- (variable-upper-bound x) (variable-lower-bound x)))
-                            (set-enumerated-domain! x (list (variable-lower-bound x))))))))                                            
+                        (cond
+                          ((zerop (- (variable-upper-bound x) (variable-lower-bound x)))
+                           (set-enumerated-domain! x (list (variable-lower-bound x))))
+                          ((and *max-denom*
+                                *maximum-discretization-range*
+                                (rationalp (variable-lower-bound x))
+                                (rationalp (variable-upper-bound x))
+                                (<= (- (variable-upper-bound x) (variable-lower-bound x))
+                                    (safest-farey-range-size *maximum-discretization-range* *max-denom*)))
+                           (set-enumerated-domain!
+                             x (rationals-between (variable-lower-bound x)
+                                                  (variable-upper-bound x)
+                                                  *max-denom*))))))))
                 ((or (and lower-bound
                           (some #'(lambda (element) (< element lower-bound))
                                 (variable-enumerated-domain x)))
@@ -5319,9 +5303,7 @@ Otherwise returns the value of X."
                          ((booleanp elt)
                           (variable-possibly-boolean? x))
                          (t
-                          (and (variable-possibly-nonboolean-nonnumber? x)
-                               (or (not (variable-type x))
-                                   (typep elt (variable-type x)))))))
+                          (variable-possibly-nonboolean-nonnumber? x))))
                  enumerated-domain))
 
 (defun share! (x y)
@@ -5456,16 +5438,6 @@ Otherwise returns the value of X."
                (variable-possibly-nonboolean-nonnumber? y))
       (local (setf (variable-possibly-nonboolean-nonnumber? y) nil))
       (setf run? t))
-    ;; share non number, non boolean type
-    (when (and (variable-possibly-nonboolean-nonnumber? x)
-               (variable-possibly-nonboolean-nonnumber? y)
-           (variable-type x))
-      (cond ((and (variable-type y)
-                  (not (eq (variable-type x) (variable-type y))))
-             (fail))
-            ((not (eq (variable-type x) (variable-type y)))
-             (local (setf (variable-type y) (variable-type x)))
-            (setf run? t))))
     (unless (or (variable-possibly-integer? y)
                 (variable-possibly-noninteger-rational? y)
                 (variable-possibly-noninteger-real? y)
@@ -5575,10 +5547,7 @@ Otherwise returns the value of X."
     (float (unless (variable-possibly-noninteger-real? x) (fail)))
     (number (unless (variable-possibly-nonreal-number? x) (fail)))
     (boolean (unless (variable-possibly-boolean? x) (fail)))
-    (otherwise (unless (and (variable-possibly-nonboolean-nonnumber? x)
-                            (or (not (variable-type x))
-                                (typep value (variable-type x))))
-                       (fail))))
+    (otherwise (unless (variable-possibly-nonboolean-nonnumber? x) (fail))))
   ;; needs work: This is sound only if VALUE does not contain any variables.
   (if (eq (variable-enumerated-domain x) t)
       (if (member value (variable-enumerated-antidomain x) :test #'generic-equal)
@@ -5617,9 +5586,7 @@ Otherwise returns the value of X."
                         (setf (variable-upper-bound x) value))
                     (if (or (null (variable-max-denom x))
                             (> (variable-max-denom x) 1))
-                        (setf (variable-max-denom x) 1))
-                    (if (variable-type x)
-                        (setf (variable-type x) nil)))
+                        (setf (variable-max-denom x) 1)))
             (ratio  (if (variable-possibly-integer? x)
                         (setf (variable-possibly-integer? x) nil))
                      (if (variable-possibly-noninteger-real? x)
@@ -5638,9 +5605,7 @@ Otherwise returns the value of X."
                        (setf (variable-upper-bound x) value))
                       (if (or (null (variable-max-denom x))
                               (< (denominator value) (variable-max-denom x)))
-                       (setf (variable-max-denom x) (denominator value)))
-                      (if (variable-type x)
-                          (setf (variable-type x) nil)))
+                       (setf (variable-max-denom x) (denominator value))))
            (float (if (variable-possibly-integer? x)
                      (setf (variable-possibly-integer? x) nil))
                   (if (variable-possibly-noninteger-rational? x)
@@ -5658,9 +5623,7 @@ Otherwise returns the value of X."
                           (< value (variable-upper-bound x)))
                       (setf (variable-upper-bound x) value))
                   (if (variable-max-denom x)
-                     (setf (variable-max-denom x) nil))
-                  (if (variable-type x)
-                          (setf (variable-type x) nil)))
+                     (setf (variable-max-denom x) nil)))
            (number (if (variable-possibly-integer? x)
                        (setf (variable-possibly-integer? x) nil))
                    (if (variable-possibly-noninteger-rational? x)
@@ -5672,9 +5635,7 @@ Otherwise returns the value of X."
                    (if (variable-possibly-nonboolean-nonnumber? x)
                        (setf (variable-possibly-nonboolean-nonnumber? x) nil))
                    (if (variable-max-denom x)
-                       (setf (variable-max-denom x) nil))
-                   (if (variable-type x)
-                          (setf (variable-type x) nil)))
+                       (setf (variable-max-denom x) nil)))
            (boolean (if (variable-possibly-integer? x)
                         (setf (variable-possibly-integer? x) nil))
                     (if (variable-possibly-noninteger-rational? x)
@@ -5684,11 +5645,7 @@ Otherwise returns the value of X."
                     (if (variable-possibly-nonreal-number? x)
                         (setf (variable-possibly-nonreal-number? x) nil))
                     (if (variable-possibly-nonboolean-nonnumber? x)
-                        (unless (and (null value)
-                                     (variable-type x)
-                                     (typep nil (variable-type x)))
-                        (setf (variable-type x) nil)
-                        (setf (variable-possibly-nonboolean-nonnumber? x) nil)))
+                        (setf (variable-possibly-nonboolean-nonnumber? x) nil))
                     (if (variable-max-denom x)
                         (setf (variable-max-denom x) nil)))
            (otherwise (if (variable-possibly-integer? x)
@@ -5702,10 +5659,7 @@ Otherwise returns the value of X."
                       (if (variable-possibly-boolean? x)
                           (setf (variable-possibly-boolean? x) nil))
                       (if (variable-max-denom x)
-                          (setf (variable-max-denom x) nil))
-                      (if (not (variable-type x))
-                          (unless (contains-variables? value)
-                            (setf (variable-type x) (canonical-type value))))))
+                          (setf (variable-max-denom x) nil))))
          (cond ((eq (variable-enumerated-domain x) t)
                 ;; needs work: This is sound only if VALUE does not contain any
                 ;;             variables.
@@ -5752,17 +5706,11 @@ Otherwise returns the value of X."
        (if (and (variable-possibly-boolean? x)
                 (not (some #'booleanp enumerated-domain)))
            (setf (variable-possibly-boolean? x) nil))
-       (if (variable-possibly-nonboolean-nonnumber? x)             
-           (cond ((and (variable-type x)
-                       (notany #'(lambda (element)
-                                  (typep element (variable-type x)))
-                              enumerated-domain))
-                  (setf (variable-type x) nil)
-                  (setf (variable-possibly-nonboolean-nonnumber? x) nil))
-                 ((not (some #'(lambda (x)
+       (if (and (variable-possibly-nonboolean-nonnumber? x)
+                (not (some #'(lambda (x)
                                (and (not (booleanp x)) (not (numberp x))))
-                           enumerated-domain))
-                 (setf (variable-possibly-nonboolean-nonnumber? x) nil))))
+                           enumerated-domain)))
+           (setf (variable-possibly-nonboolean-nonnumber? x) nil))
        (if (and (variable-possibly-nonreal-number? x)
                 (not (some #'(lambda (x) (and (not (realp x)) (numberp x)))
                            enumerated-domain)))
@@ -5793,15 +5741,6 @@ Otherwise returns the value of X."
                         (remove-if-not #'rationalp enumerated-domain)
                         :key #'denominator)))
            (setf (variable-max-denom x) max-denom-in-domain)))
-      (if (or (variable-nonboolean-nonnumber? x)
-              (and (variable-possibly-nonboolean-nonnumber? x)
-                   (variable-possibly-boolean? x)))
-          (let ((domain-type (collect-type enumerated-domain)))
-            (when domain-type
-                  (if (variable-type x)
-                      (unless (eq (variable-type x) domain-type)
-                        (fail)))
-                  (setf (variable-type x) domain-type))))
        (if (null (rest enumerated-domain))
            (setf (variable-value x) (first enumerated-domain)))
        t)
@@ -5810,17 +5749,11 @@ Otherwise returns the value of X."
        (if (and (variable-possibly-boolean? x)
                 (not (some #'booleanp enumerated-domain)))
            (setf (variable-possibly-boolean? x) nil))
-       (if (variable-possibly-nonboolean-nonnumber? x)             
-           (cond ((and (variable-type x)
-                       (notany #'(lambda (element)
-                                  (typep element (variable-type x)))
-                              enumerated-domain))
-                  (setf (variable-type x) nil)
-                  (setf (variable-possibly-nonboolean-nonnumber? x) nil))
-                 ((not (some #'(lambda (x)
+       (if (and (variable-possibly-nonboolean-nonnumber? x)
+                (not (some #'(lambda (x)
                                (and (not (booleanp x)) (not (numberp x))))
-                           enumerated-domain))
-                 (setf (variable-possibly-nonboolean-nonnumber? x) nil))))
+                           enumerated-domain)))
+           (setf (variable-possibly-nonboolean-nonnumber? x) nil))
        (if (and (variable-possibly-nonreal-number? x)
                 (not (some #'(lambda (x) (and (not (realp x)) (numberp x)))
                            enumerated-domain)))
@@ -5851,15 +5784,6 @@ Otherwise returns the value of X."
                         (remove-if-not #'rationalp enumerated-domain)
                         :key #'denominator)))
            (setf (variable-max-denom x) max-denom-in-domain)))
-      (if (or (variable-nonboolean-nonnumber? x)
-              (and (variable-possibly-nonboolean-nonnumber? x)
-                   (variable-possibly-boolean? x)))
-          (let ((domain-type (collect-type enumerated-domain)))
-            (when domain-type
-                  (if (variable-type x)
-                      (unless (eq (variable-type x) domain-type)
-                        (fail)))
-                  (setf (variable-type x) domain-type))))
       (if (null (rest enumerated-domain))
           (setf (variable-value x) (first enumerated-domain)))
        t)
@@ -5875,10 +5799,7 @@ Otherwise returns the value of X."
           (remove-duplicates (map 'list #'eliminate-variables enumerated-domain)
                              :test #'generic-equal))
     (unless (variable-possibly-boolean? x)
-      (cond ((eq (variable-type x) 'list)
-             (setf enumerated-domain (remove t enumerated-domain)))
-             ((not (eq (variable-type x) 'symbol))
-              (setf enumerated-domain (remove-if #'booleanp enumerated-domain)))))
+     (setf enumerated-domain (remove-if #'booleanp enumerated-domain)))
     (unless (variable-possibly-nonboolean-nonnumber? x)
           (setf enumerated-domain
                 (remove-if #'(lambda (x) (and (not (booleanp x)) (not (numberp x))))
@@ -5912,12 +5833,6 @@ Otherwise returns the value of X."
                           (and (ratiop element)
                                (> (denominator element) (variable-max-denom x))))
                         enumerated-domain)))
-    (if (and (variable-possibly-nonboolean-nonnumber? x)
-             (variable-type x))
-        (setf enumerated-domain
-              (remove-if-not #'(lambda (element)
-                                (typep element (variable-type x)))
-                            enumerated-domain)))
     (setf enumerated-domain
           (if (eq (variable-enumerated-domain x) t)
               (set-difference enumerated-domain
@@ -6452,13 +6367,17 @@ Otherwise returns the value of X."
 (defun <-rule (x y)
 (declare (type variable x y))
   (if (variable-lower-bound x)
-      (restrict-lower-bound! y (if (variable-integer? y)
-                                   (1+ (floor (variable-lower-bound x)))
-                                   (variable-lower-bound x))))
+      (restrict-lower-bound! y (cond ((variable-integer? y)
+                                      (1+ (floor (variable-lower-bound x))))
+                                     ((variable-rational? y)
+                                      (strict-next-in-domain (variable-lower-bound x) (variable-max-denom y)))
+                                     (t (variable-lower-bound x)))))
   (if (variable-upper-bound y)
-      (restrict-upper-bound! x (if (variable-integer? x)
-                                   (1- (ceiling (variable-upper-bound y)))
-                                   (variable-upper-bound y))))
+      (restrict-upper-bound! x (cond ((variable-integer? x)
+                                      (1- (ceiling (variable-upper-bound y))))
+                                     ((variable-rational? x)
+                                      (strict-prev-in-domain (variable-upper-bound y) (variable-max-denom x)))
+                                     (t (variable-upper-bound y)))))
   (let ((x (value-of x))
         (y (value-of y)))
     (if (and (not (variable? x)) (not (variable? y)) (>= x y)) (fail))))
@@ -8942,450 +8861,12 @@ X2."
   (/=v-internal x xs))
 
 
-;;; note: Enable this to use EXTENSIBLE TYPES.
-;;; #+(or)
-(eval-when (:compile-toplevel :load-toplevel :execute)
-  (pushnew :screamer-extensible-types *features* :test #'eq))
-
-#+screamer-extensible-types
-(defparameter-compile-time *nonnumber-types*
-  '(list cons vector array string symbol)
- "The list of non-boolean non-number VARIABLE types which will be created lifted functions, as
- known?-TYPEv, known?-notv-TYPEv, assert!-TYPEpv, assert!-notv-TYPEpv, TYPEpv. These functions are 
- used by KNOWN?, ASSERT! and DECIDE. Also will be added to the system variable generators, such as
- A-LISTV, A-CONSV, A-VECTORV, A-ARRAYV, A-STRINGV, etc. The user can extend this list by adding new
- types to it.")
- 
-#+screamer-extensible-types
-(defparameter-compile-time *screamer-lifted-functions*
-'(integerpv ratiopv rationalpv floatpv realpv numberpv memberv booleanpv
-  symbolpv typepv =v <v <=v >v >=v /=v funcallv applyv equalv all-differentv)
-  "The list of all lifted functions.")
-
-#+screamer-extensible-types
-(defparameter-compile-time *screamer-known?-functions*
-'((integerpv . known?-integerpv)
-  (ratiopv . known?-ratiopv)
-  (rationalpv . known?-rationalpv)
-  (floatpv . known?-floatpv)
-  (realpv . known?-realpv)
-  (numberpv . known?-numberpv)
-  (memberv . known?-memberv)
-  (booleanpv . known?-booleanpv)
-  (symbolpv . known?-symbolpv)
-  (=v . known?-=v)
-  (<v . known?-<v)
-  (<=v . known?-<=v)
-  (>v . known?->v)
-  (>=v . known?->=v)
-  (/=v . known?-/=v)
-  (funcallv . known?-funcallv)
-  (applyv . known?-applyv)
-  (equalv . known?-equalv)
-  (all-differentv . known?-all-differentv))
-"List of all KNOWN? functions.")
-
-#+screamer-extensible-types
-(defparameter-compile-time *screamer-known?-notv-functions*
-'((integerpv . known?-notv-integerpv)
-  (ratiopv . known?-notv-ratiopv)
-  (rationalpv . known?-notv-rationalpv)
-  (floatpv . known?-notv-floatpv)
-  (realpv . known?-notv-realpv)
-  (numberpv . known?-notv-numberpv)
-  (memberv . known?-notv-memberv)
-  (booleanpv . known?-notv-booleanpv)
-  (symbolpv . known?-notv-symbolpv)
-  (=v . known?-/=v)
-  (<v . known?->=v)
-  (<=v . known?->v)
-  (>v . known?-<=v)
-  (>=v . known?-<v)
-  (/=v . known?-=v)
-  (funcallv . known?-notv-funcallv)
-  (applyv . known?-notv-applyv)
-  (equalv . known?-notv-equalv)
-  (all-differentv . known?-notv-all-differentv))
-"List of all KNOWN?-NOTV functions.")
-
-#+screamer-extensible-types
-(defparameter-compile-time *screamer-assert!-functions*
-'((integerpv . assert!-integerpv)
-  (ratiopv . assert!-ratiopv)
-  (rationalpv . assert!-rationalpv)
-  (floatpv . assert!-floatpv)
-  (realpv . assert!-realpv)
-  (numberpv . assert!-numberpv)
-  (memberv . assert!-memberv)
-  (booleanpv . assert!-booleanpv)
-  (symbolpv . assert!-symbolpv)
-  (=v . assert!-=v)
-  (<v . assert!-<v)
-  (<=v . assert!-<=v)
-  (>v . assert!->v)
-  (>=v . assert!->=v)
-  (/=v . assert!-/=v)
-  (funcallv . assert!-funcallv)
-  (applyv . assert!-applyv)
-  (equalv . assert!-equalv)
-  (all-differentv . assert!-all-differentv))
-"List of all ASSERT! functions.")
-
-#+screamer-extensible-types
-(defparameter-compile-time *screamer-assert!-notv-functions*
-'((integerpv . assert!-notv-integerpv)
-  (ratiopv . assert!-notv-ratiopv)
-  (rationalpv . assert!-notv-rationalpv)
-  (floatpv . assert!-notv-floatpv)
-  (realpv . assert!-notv-realpv)
-  (numberpv . assert!-notv-numberpv)
-  (memberv . assert!-notv-memberv)
-  (booleanpv . assert!-notv-booleanpv)
-  (symbolpv . assert!-notv-symbolpv)
-  (=v . assert!-/=v)
-  (<v . assert!->=v)
-  (<=v . assert!->v)
-  (>v . assert!-<=v)
-  (>=v . assert!-<v)
-  (/=v . assert!-=v)
-  (funcallv . assert!-notv-funcallv)
-  (applyv . assert!-notv-applyv)
-  (equalv . assert!-notv-equalv)
-  (all-differentv . assert!-notv-all-differentv))
-"List of all ASSERT!-NOTV functions.")
-
-;;; Optimized Macro to define new VARIABLE types
-
-#+screamer-extensible-types
-(defmacro-compile-time define-screamer-type (type)
-;; note: TYPE here is an abbreviation for NON BOOLEAN NON NUMBER TYPE.
-"This macro defines a new VARIABLE type in the SCREAMER system. 
-
-TYPE must be a symbol of the new SCREAMER variable type.
-Any attempt to define a type with the same name or an
-already existing type will result in an error.
-
-TYPE must be a NON NUMBER type, such as VECTOR, STRING, etc.
-
-The following optimized lifted functions will be generated:
-- restrict-TYPE!
-- restrict-nonTYPE!
-- variable-possibly-TYPE?
-- variable-TYPE?
-- variable-nonTYPE?
-- known?-TYPEpv
-- known?-notv-TYPEpv
-- assert!-TYPEpv
-- assert!-notv-TYPEpv
-- TYPEpv (variable predicate)
-
-Only TYPEpv and a-TYPEv symbols will be exported and will be ready to use as
-a new variable type.
-
-The expressions (assert! (TYPEpv x)) or (assert! (not (TYPEpv x))) will call the 
-specialized lifted functions for that type."
-(when (member type '(integer ratio rational float real complex gaussian-integer number boolean) :test #'eq)
-  (error "Cannot define a SCREAMER VARIABLE type of ~A. Must be a NON NUMBER, NON BOOLEAN type." type))
-
-  (let* ((type-string (symbol-name type))
-         (first-char (char-downcase (char type-string 0)))
-         (article (if (find first-char "aeiou") "AN" "A"))
-         (article-downcase (string-downcase article))
-         (predicate-p (or (find-symbol (string-upcase (format nil "~Ap" type-string)) :cl)
-                          (error "Cannot define a SCREAMER VARIABLE type of ~A. A Common Lisp predicate~%~
-                           function of ~A must exist." type (string-upcase (format nil "~Ap" type-string)))))
-         (restrict-type!           (intern (format nil "RESTRICT-~A!" type-string) :screamer))
-         (restrict-nontype!        (intern (format nil "RESTRICT-NON~A!" type-string) :screamer))
-         (variable-possibly-type?  (intern (format nil "VARIABLE-POSSIBLY-~A?" type-string) :screamer))
-         (variable-type?           (intern (format nil "VARIABLE-~A?" type-string) :screamer))
-         (variable-non-type?       (intern (format nil "VARIABLE-NON~A?" type-string) :screamer))
-         (known?-typepv            (intern (format nil "KNOWN?-~APV" type-string) :screamer))
-         (known?-notv-typepv       (intern (format nil "KNOWN?-NOTV-~APV" type-string) :screamer))
-         (assert!-typepv           (intern (format nil "ASSERT!-~APV" type-string) :screamer))
-         (assert!-notv-typepv      (intern (format nil "ASSERT!-NOTV-~APV" type-string) :screamer))
-         (lifted-fn                (intern (format nil "~APV" type-string) :screamer))
-         (predicate-docstring (format nil
-"Returns T if X is known to be ~A ~A, NIL if X is known to be not ~A ~A,
-and otherwise returns a new boolean variable V.
-
-The values of X and V are mutually constrained via noticers so that V is equal
-to T if and only if X is known to be ~A ~A and V is equal to NIL if and only if
-X is known not to be ~A ~A.
-
-If X later becomes known to be ~A ~A, a noticer attached to X restricts V to
-equal T. Likewise, if X later becomes known to be not ~A ~A, a noticer attached
-to X restricts V to equal NIL.
-
-Furthermore, if V ever becomes known to equal T then a noticer attached to V
-restricts X to be ~A ~A. Likewise, if V ever becomes known to equal NIL
-then a noticer attached to V restricts X to be not ~A ~A."
- article-downcase type-string  article-downcase type-string
- article-downcase type-string  article-downcase type-string
- article-downcase type-string  article-downcase type-string
- article-downcase type-string  article-downcase type-string)))
-     `(progn
-        (unless (string-equal (package-name *package*) "SCREAMER")
-         (error "Cannot define an SCREAMER VARIABLE type outside of SCREAMER package."))
-
-           (cond ((string= "SYMBOL" ,type-string)
-                 ;; note: this handles the type SYMBOL and LIST as special cases since
-                 ;; they are the only non-number types that can be also booleans (NIL).
-                  (defun ,variable-possibly-type? (x)
-                   (declare (type variable x))
-                   (the boolean
-                   (or (variable-possibly-boolean? x)
-                       (and (variable-possibly-nonboolean-nonnumber? x)
-                            (or (null (variable-type x))
-                                (eq (variable-type x) ',type))))))
-
-                  (defun ,variable-type? (x)
-                    (declare (type variable x))
-                    (the boolean
-                    (and (not (variable-possibly-nonreal-number? x))
-                         (not (variable-possibly-noninteger-real? x))
-                         (not (variable-possibly-integer? x))
-                         (not (variable-possibly-noninteger-rational? x))
-                         (or (variable-possibly-boolean? x)
-                             (and (variable-possibly-nonboolean-nonnumber? x)
-                                  (eq (variable-type x) ',type))))))
-
-                   (defun ,variable-non-type? (x)
-                     (declare (type variable x))
-                     (the boolean
-                     (and (or (variable-possibly-nonreal-number? x)
-                              (variable-possibly-noninteger-real? x)
-                              (variable-possibly-integer? x)
-                              (variable-possibly-noninteger-rational? x))
-                              (not (or (variable-possibly-boolean? x)
-                                       (and (variable-possibly-nonboolean-nonnumber? x)
-                                            (or (null (variable-type x))
-                                                 (eq (variable-type x) ',type)))))))))
-                ((string= "LIST" ,type-string)
-                 (defun ,variable-possibly-type? (x)
-                   (declare (type variable x))
-                   (the boolean
-                   (or (and (variable-possibly-boolean? x)
-                            (or (eq (variable-enumerated-domain x) t)
-                                ;; KLUDGE: find a better solution for this case.
-                                ;; if the enumerated domain contains NIL, then it could be a list.
-                                (if (member nil (variable-enumerated-domain x) :test #'eq) t)))
-                       (and (variable-possibly-nonboolean-nonnumber? x)
-                            (or (null (variable-type x))
-                                (eq (variable-type x) ',type))))))
-
-                  (defun ,variable-type? (x)
-                    (declare (type variable x))
-                    (the boolean
-                    (and (not (variable-possibly-nonreal-number? x))
-                         (not (variable-possibly-noninteger-real? x))
-                         (not (variable-possibly-integer? x))
-                         (not (variable-possibly-noninteger-rational? x))
-                         (or (and (variable-possibly-boolean? x)
-                                  (or (eq (variable-enumerated-domain x) t)
-                                   ;; KLUDGE: find a better solution for this case.
-                                   ;; if the enumerated domain contains NIL, then it could be a list.
-                                      (if (member nil (variable-enumerated-domain x) :test #'eq) t)))
-                             (and (variable-possibly-nonboolean-nonnumber? x)
-                                  (eq (variable-type x) ',type))))))
-
-                   (defun ,variable-non-type? (x)
-                     (declare (type variable x))
-                     (the boolean
-                     (and (or (variable-possibly-nonreal-number? x)
-                              (variable-possibly-noninteger-real? x)
-                              (variable-possibly-integer? x)
-                              (variable-possibly-noninteger-rational? x))
-                              (not (or (and (variable-possibly-boolean? x)
-                                            (or (eq (variable-enumerated-domain x) t)
-                                             ;; KLUDGE: find a better solution for this case.
-                                             ;; if the enumerated domain contains NIL, then it could be a list.
-                                                (not (member nil (variable-enumerated-domain x) :test #'eq))))
-                                       (and (variable-possibly-nonboolean-nonnumber? x)
-                                            (or (null (variable-type x))
-                                                 (eq (variable-type x) ',type)))))))))
-
-                 (t (defun ,variable-possibly-type? (x)
-                     (declare (type variable x))
-                     (the boolean
-                     (and (variable-possibly-nonboolean-nonnumber? x)
-                          (or (null (variable-type x))
-                              (eq (variable-type x) ',type)))))
-                 
-                    (defun ,variable-type? (x)
-                     (declare (type variable x))
-                     (the boolean
-                     (and (not (variable-possibly-boolean? x))
-                          (not (variable-possibly-nonreal-number? x))
-                          (not (variable-possibly-noninteger-real? x))
-                          (not (variable-possibly-integer? x))
-                          (not (variable-possibly-noninteger-rational? x))
-                          (variable-possibly-nonboolean-nonnumber? x)
-                          (eq (variable-type x) ',type))))
-
-                    (defun ,variable-non-type? (x)
-                      (declare (type variable x))
-                      (the boolean
-                      (and (or (variable-possibly-boolean? x)
-                              (variable-possibly-nonreal-number? x)
-                              (variable-possibly-noninteger-real? x)
-                              (variable-possibly-integer? x)
-                              (variable-possibly-noninteger-rational? x))      
-                           (not (and (variable-possibly-nonboolean-nonnumber? x)
-                                     (or (null (variable-type x))
-                                         (eq (variable-type x) ',type)))))))))
-
-            (defun ,restrict-type! (x)
-             (declare (type variable x))
-              (unless (or (variable-possibly-nonboolean-nonnumber? x)
-                          (,variable-possibly-type? x))
-                      (fail))
-              (when (or (eq (variable-value x) x) (not (variable? (variable-value x))))
-                (let ((run? nil))
-                  (when (variable-possibly-integer? x)
-                    (local (setf (variable-possibly-integer? x) nil))
-                    (setf run? t))
-                  (when (variable-possibly-noninteger-rational? x)
-                    (local (setf (variable-possibly-noninteger-rational? x) nil))
-                    (setf run? t))
-                  (when (variable-possibly-noninteger-real? x)
-                    (local (setf (variable-possibly-noninteger-real? x) nil))
-                    (setf run? t))
-                  (when (variable-possibly-nonreal-number? x)
-                    (local (setf (variable-possibly-nonreal-number? x) nil))
-                    (setf run? t))
-                  (when (or (null (variable-type x)) (not (eq (variable-type x) ',type)))
-                    (local (setf (variable-type x) ',type))
-                    (setf run? t))
-                  (when (variable-possibly-boolean? x)
-                    (unless (or (eq (variable-type x) 'symbol)
-                                (eq (variable-type x) 'list))
-                    (local (setf (variable-possibly-boolean? x) nil)))
-                    (setf run? t))
-                  (when run?
-                    (cond ((eq (variable-enumerated-domain x) t)
-                           (if (and (eq (variable-type x) 'list)
-                                    (variable-possibly-boolean? x))
-                               (local (setf (variable-enumerated-antidomain x)
-                                            (adjoin t (variable-enumerated-antidomain x)
-                                                   :test #'eq)))))
-                          ((not (every (function ,predicate-p) (variable-enumerated-domain x)))
-                           (set-enumerated-domain!
-                            x (remove-if-not (function ,predicate-p) (variable-enumerated-domain x)))))
-                    (run-noticers x)))))
-
-           (defun ,restrict-nontype! (x)
-           (declare (type variable x))
-            (when (and (variable-type x) (eq (variable-type x) ',type))
-              (fail))
-            (when (and (variable-possibly-boolean? x)
-                       (eq ',type 'symbol))
-              (local (setf (variable-possibly-boolean? x) nil)))
-            (when (and (or (eq (variable-value x) x) (not (variable? (variable-value x))))
-                       (,variable-possibly-type? x))
-              (cond ((eq (variable-enumerated-domain x) t)
-                     (cond ((eq ',type 'list)
-                            (local (setf (variable-enumerated-antidomain x)
-                                         (adjoin nil (variable-enumerated-antidomain x)
-                                                  :test #'eq))))
-                           ((eq ',type 'symbol)
-                            (local (setf (variable-enumerated-antidomain x)
-                                   (adjoin t
-                                          (adjoin nil (variable-enumerated-antidomain x)
-                                                 :test #'eq)
-                                          :test #'eq))))))
-                    ((some (function ,predicate-p) (variable-enumerated-domain x))
-                     (set-enumerated-domain!
-                      x (remove-if (function ,predicate-p) (variable-enumerated-domain x)))))
-              (run-noticers x)))
-
-           (defun ,known?-typepv (x)
-             (let ((x (value-of x)))
-               (typecase x
-                 (variable (,variable-type? x))
-                 (otherwise (typep x ',type) t))))
-
-           (defun ,known?-notv-typepv (x)
-             (let ((x (value-of x)))
-               (typecase x
-                 (variable (,variable-non-type? x))
-                 (otherwise (not (typep x ',type))))))
-
-           (defun ,assert!-typepv (x)
-             (let ((x (value-of x)))
-               (typecase x
-                 (variable (,restrict-type! x))
-                 (otherwise (if (not (typep x ',type)) (fail))))))
-
-           (defun ,assert!-notv-typepv (x)
-             (let ((x (value-of x)))
-               (typecase x
-                 (variable (,restrict-nontype! x))
-                 (otherwise (if (typep x ',type) (fail))))))
-
-           (defun ,lifted-fn (x)
-             ,predicate-docstring
-             (cond ((,known?-typepv x) t)
-                   ((,known?-notv-typepv x) nil)
-                   (t (let ((x (variablize x))
-                            (z (a-booleanv)))
-                      (declare (type variable x z))
-                    (attach-noticer!
-                     #'(lambda ()
-                         (cond ((,variable-type? x) (restrict-true! z))
-                               ((,variable-non-type? x) (restrict-false! z))))
-                     x)
-                    (attach-noticer!
-                     #'(lambda ()
-                         (cond ((variable-true? z) (,restrict-type! x))
-                               ((variable-false? z) (,restrict-nontype! x))))
-                     z)
-                    z))))
-
-          (unless (member ',type *nonnumber-types* :test #'eq)
-            (setf *nonnumber-types*
-                  (cons ',type *nonnumber-types*)))
-
-          (unless (member ',lifted-fn *screamer-lifted-functions* :test #'eq)
-            (setf *screamer-lifted-functions*
-                  (cons ',lifted-fn *screamer-lifted-functions*)))
-          
-          (unless (assoc ',lifted-fn *screamer-known?-functions* :test #'eq)
-            (setf *screamer-known?-functions*
-                  (cons (cons ',lifted-fn ',known?-typepv) *screamer-known?-functions*)))
-
-          (unless (assoc ',lifted-fn *screamer-known?-notv-functions* :test #'eq)
-            (setf *screamer-known?-notv-functions*
-                  (cons (cons ',lifted-fn ',known?-notv-typepv) *screamer-known?-notv-functions*)))
-
-          (unless (assoc ',lifted-fn *screamer-assert!-functions* :test #'eq)
-            (setf *screamer-assert!-functions*
-                  (cons (cons ',lifted-fn ',assert!-typepv) *screamer-assert!-functions*)))
-
-          (unless (assoc ',lifted-fn *screamer-assert!-notv-functions* :test #'eq)
-            (setf *screamer-assert!-notv-functions*
-                  (cons (cons ',lifted-fn ',assert!-notv-typepv) *screamer-assert!-notv-functions*)))
-
-    (export (list ',lifted-fn) :screamer))))
-
-#+screamer-extensible-types
-(defmacro-compile-time define-all-screamer-types ()
-  "Defines all Screamer types listed in the GLOBAL VARIABLE *nonnumber-types*."
- `(progn
-     ,@(mapcar (lambda (type)
-                 `(define-screamer-type ,type))
-               *nonnumber-types*)))
-
-#+screamer-extensible-types
-(eval-when (:compile-toplevel :load-toplevel :execute)
- (define-all-screamer-types))
-
 ;;; The Optimizer Macros for ASSERT!, KNOWN? and DECIDE
 
 (defun known?-true (x) (assert!-booleanpv x) (eq (value-of x) t))
 
 (defun known?-false (x) (assert!-booleanpv x) (null (value-of x)))
 
-#-screamer-extensible-types
 (defun-compile-time transform-known? (form polarity?)
   (if (and (consp form) (null (rest (last form))))
       (cond
@@ -9402,7 +8883,7 @@ then a noticer attached to V restricts X to be not ~A ~A."
                        (rest form))))
         ((member (first form)
                  '(integerpv rationalpv ratiopv floatpv realpv numberpv
-                   memberv booleanpv =v <v <=v >v >=v /=v funcallv applyv equalv)
+                   memberv booleanpv =v <v <=v >v >=v /=v funcallv applyv equalv all-differentv)
                  :test #'eq)
          (cons (cdr (assoc (first form)
                            (if polarity?
@@ -9448,31 +8929,6 @@ then a noticer attached to V restricts X to be not ~A ~A."
         (t `(known?-false ,form)))
       (if polarity? `(known?-true ,form) `(known?-false ,form))))
 
-#+screamer-extensible-types
-(defun-compile-time transform-known? (form polarity?)
-  (if (and (consp form) (null (rest (last form))))
-      (cond
-        ((and (eq (first form) 'notv)
-              (= (length form) 2))
-         (transform-known? (second form) (not polarity?)))
-        ((eq (first form) 'andv)
-         (cons (if polarity? 'and 'or)
-               (mapcar #'(lambda (form) (transform-known? form polarity?))
-                       (rest form))))
-        ((eq (first form) 'orv)
-         (cons (if polarity? 'or 'and)
-               (mapcar #'(lambda (form) (transform-known? form polarity?))
-                       (rest form))))
-        ((member (first form) *screamer-lifted-functions* :test #'eq)
-         (cons (cdr (assoc (first form)
-                           (if polarity?
-                               *screamer-known?-functions*
-                               *screamer-known?-notv-functions*)
-                            :test #'eq))
-               (rest form)))
-        (polarity? `(known?-true ,form))
-        (t `(known?-false ,form)))
-      (if polarity? `(known?-true ,form) `(known?-false ,form))))
 
 (defmacro-compile-time known? (x)
   "Restricts X to be a boolean. If X is equal to T after being restricted to
@@ -9506,7 +8962,6 @@ nested in a call to KNOWN?, are similarly transformed."
 
 (defun assert!-false (x) (assert!-equalv x nil))
 
-#-screamer-extensible-types
 (defun-compile-time transform-assert! (form polarity?)
   (if (and (consp form) (null (rest (last form))))
       (cond
@@ -9531,7 +8986,7 @@ nested in a call to KNOWN?, are similarly transformed."
                         (rest form)))))
         ((member (first form)
                  '(integerpv rationalpv ratiopv floatpv realpv numberpv
-                   memberv booleanpv =v <v <=v >v >=v /=v funcallv applyv equalv)
+                   memberv booleanpv =v <v <=v >v >=v /=v funcallv applyv equalv all-differentv)
                  :test #'eq)
          (cons (cdr (assoc (first form)
                            (if polarity?
@@ -9577,41 +9032,6 @@ nested in a call to KNOWN?, are similarly transformed."
         (t `(assert!-false ,form)))
       (if polarity? `(assert!-true ,form) `(assert!-false ,form))))
 
-#+screamer-extensible-types
-(defun-compile-time transform-assert! (form polarity?)
-  (if (and (consp form) (null (rest (last form))))
-      (cond
-        ((and (eq (first form) 'notv)
-              (= (length form) 2))
-         (transform-assert! (second form) (not polarity?)))
-        ((eq (first form) 'andv)
-         (if polarity?
-             `(progn ,@(mapcar
-                        #'(lambda (form) (transform-assert! form polarity?))
-                        (rest form)))
-             (cond ((null (rest form)) `(fail))
-                   ((null (rest (rest form))) `(assert!-false ,(second form)))
-                   (t `(assert!-notv-andv ,@(rest form))))))
-        ((eq (first form) 'orv)
-         (if polarity?
-             (cond ((null (rest form)) `(fail))
-                   ((null (rest (rest form))) `(assert!-true ,(second form)))
-                   (t `(assert!-orv ,@(rest form))))
-             `(progn ,@(mapcar
-                        #'(lambda (form) (transform-assert! form polarity?))
-                        (rest form)))))
-        ((member (first form)
-                 *screamer-lifted-functions* :test #'eq)
-         (cons (cdr (assoc (first form)
-                           (if polarity?
-                               *screamer-assert!-functions*
-                               *screamer-assert!-notv-functions*)
-                           :test #'eq))
-               (rest form)))
-        (polarity? `(assert!-true ,form))
-        (t `(assert!-false ,form)))
-      (if polarity? `(assert!-true ,form) `(assert!-false ,form))))
-
 (defmacro-compile-time assert! (x)
   "Restricts X to T. No meaningful result is returned. The argument X can be
 either a variable or a non-variable.
@@ -9637,7 +9057,6 @@ directly nested in a call to ASSERT!, are similarly transformed."
   ;; FIXME: Should probably be a function + a compiler macro.
   (transform-assert! x t))
 
-#-screamer-extensible-types
 (defun-compile-time transform-decide (form polarity?)
   (if (and (consp form) (null (rest (last form))))
       (cond
@@ -9666,7 +9085,7 @@ directly nested in a call to ASSERT!, are similarly transformed."
                          (mapcar #'third result)))))
         ((member (first form)
                  '(integerpv rationalpv ratiopv floatpv realpv numberpv
-                   memberv booleanpv =v <v <=v >v >=v /=v funcallv applyv equalv)
+                   memberv booleanpv =v <v <=v >v >=v /=v funcallv applyv equalv all-differentv)
                  :test #'eq)
          (let ((arguments (mapcar #'(lambda (argument)
                                       (declare (ignore argument))
@@ -9761,66 +9180,6 @@ directly nested in a call to ASSERT!, are similarly transformed."
          (if polarity? `(assert!-true ,argument) `(assert!-false ,argument))
          (if polarity? `(assert!-false ,argument) `(assert!-true ,argument))))))
 
-#+screamer-extensible-types
-(defun-compile-time transform-decide (form polarity?)
-  (if (and (consp form) (null (rest (last form))))
-      (cond
-        ((and (eq (first form) 'notv)
-              (= (length form) 2))
-         (transform-decide (second form) (not polarity?)))
-        ((eq (first form) 'andv)
-         (let ((result (mapcar #'(lambda (form)
-                                   (multiple-value-list
-                                    (transform-decide form polarity?)))
-                               (rest form))))
-           (values (reduce #'append (mapcar #'first result))
-                   (cons (if polarity? 'progn 'either)
-                         (mapcar #'second result))
-                   (cons (if polarity? 'either 'progn)
-                         (mapcar #'third result)))))
-        ((eq (first form) 'orv)
-         (let ((result (mapcar #'(lambda (form)
-                                   (multiple-value-list
-                                    (transform-decide form polarity?)))
-                               (rest form))))
-           (values (reduce #'append (mapcar #'first result))
-                   (cons (if polarity? 'either 'progn)
-                         (mapcar #'second result))
-                   (cons (if polarity? 'progn 'either)
-                         (mapcar #'third result)))))
-        ((member (first form)
-                 *screamer-lifted-functions*
-                 :test #'eq)
-         (let ((arguments (mapcar #'(lambda (argument)
-                                      (declare (ignore argument))
-                                      (gensym "ARGUMENT-"))
-                                  (rest form))))
-           (values (mapcar #'list arguments (rest form))
-                   (cons (cdr (assoc (first form)
-                                     (if polarity?
-                                         *screamer-assert!-functions*
-                                         *screamer-assert!-notv-functions*)
-                                     :test #'eq))
-                         arguments)
-                   (cons (cdr (assoc (first form)
-                                     (if polarity?
-                                         *screamer-assert!-notv-functions*
-                                         *screamer-assert!-functions*)
-                                     :test #'eq))
-                         arguments))))
-        (t (let ((argument (gensym "ARGUMENT-")))
-             (values (list (list argument form))
-                     (if polarity?
-                         `(assert!-true ,argument)
-                         `(assert!-false ,argument))
-                     (if polarity?
-                         `(assert!-false ,argument)
-                         `(assert!-true ,argument))))))
-      (let ((argument (gensym "ARGUMENT-")))
-        (values
-         (list (list argument form))
-         (if polarity? `(assert!-true ,argument) `(assert!-false ,argument))
-         (if polarity? `(assert!-false ,argument) `(assert!-true ,argument))))))
 
 (defmacro-compile-time decide (x)
   "Restricts X to a be boolean. After X is restricted a nondeterministic
@@ -10063,44 +9422,8 @@ VALUES can be either a vector or a list designator."
 random permutation of VALUES.
 VALUES can be either a vector or a list designator."
   (let ((v (if name? (make-variable name) (make-variable))))
-    (assert! (memberv v (alexandria::shuffle values)))
+    (assert! (memberv v (alexandria::shuffle (copy-list values))))
     (value-of v)))
-
-#+screamer-extensible-types
-(defmacro define-screamer-generator-function (type)
-"This macro defines a generator function for a specific non number type."
-  (let* ((type-string (symbol-name type))
-         (article (if (find (char-downcase (char type-string 0)) "aeiou") "AN" "A"))
-         (generator (intern (format nil "~A-~AV" article type-string) :screamer))
-         (lifted-fn (intern (format nil "~APV" type-string) :screamer))
-         (docstring (format nil "Returns a variable constrained to be ~A ~A." (string-downcase article) type-string)))
-   `(progn
-      (unless (string-equal (package-name *package*) "SCREAMER")
-         (error "Cannot define an SCREAMER GENERATOR FUNCTION outside of SCREAMER package."))
-         
-      (unless (fboundp ',lifted-fn)
-        (error "The lifted function ~A not found at all in SCREAMER package." ',lifted-fn))
-        
-      (if (fboundp ',generator)
-          (warn "The VARIABLE generator function ~A is already defined in SCREAMER package." ',generator)
-          (defun ,generator (&optional (name nil name?))
-            ,docstring
-            (let ((v (if name? (make-variable name) (make-variable))))
-              (assert! (,lifted-fn v))
-              v)))
-
-      (export (list ',generator) :screamer))))
-
-#+screamer-extensible-types
-(defmacro define-all-screamer-generator-functions ()
-  "Defines all Screamer generator functions listed in the GLOBAL VARIABLE *nonnumber-types*."
-  `(progn
-     ,@(mapcar (lambda (type)
-                 `(define-screamer-generator-function ,type))
-               *nonnumber-types*)))
-
-#+screamer-extensible-types 
- (define-all-screamer-generator-functions)
 
 (defmacro-compile-time n-variables (n var-fn &rest args)
   "Generate N variables using VAR-FN and ARGS.
