@@ -216,6 +216,73 @@ contexts even though they may appear inside a SCREAMER::DEFUN."))
       (pop body))
     (values body (reverse declarations) documentation-string)))
 
+(defun-compile-time split-declaration-clause (clause var)
+  "Split a single declaration CLAUSE according to whether it mentions VAR.
+
+Returns (values FOR-VAR REMAINING) where each value is either NIL or a
+single declaration clause (without the (DECLARE ...) wrapper).
+
+Recognised binding-scoped clauses: DYNAMIC-EXTENT, IGNORE, IGNORABLE,
+SPECIAL, TYPE. For these, multi-variable forms are split so FOR-VAR
+contains only VAR and REMAINING contains the other variables.
+
+Implementation-specific clauses whose tail is a list of symbols (e.g.
+SBCL's SB-C::NO-DEBUG) are treated as binding-scoped and split the same
+way.
+
+Non-variable clauses (OPTIMIZE, FTYPE, DECLARATION, etc.) and clauses
+with non-symbol tails are returned untouched in REMAINING."
+  (flet ((split-vars (head vars)
+           (cond ((not (member var vars :test #'eq))
+                  (values nil clause))
+                 ((null (set-difference vars (list var) :test #'eq))
+                  (values clause nil))
+                 (t
+                  (values `(,head ,var)
+                          `(,head ,@(remove var vars :test #'eq)))))))
+    (case (first clause)
+      ((dynamic-extent ignore ignorable special)
+       (split-vars (first clause) (rest clause)))
+      (type
+       (let ((type-spec (second clause))
+             (vars (rest (rest clause))))
+         (cond ((not (member var vars :test #'eq))
+                (values nil clause))
+               ((null (set-difference vars (list var) :test #'eq))
+                (values clause nil))
+               (t
+                (values `(type ,type-spec ,var)
+                        `(type ,type-spec
+                               ,@(remove var vars :test #'eq)))))))
+      (otherwise
+       (let ((tail (rest clause)))
+         (if (and (consp tail) (every #'symbolp tail))
+             (split-vars (first clause) tail)
+             (values nil clause)))))))
+
+(defun-compile-time partition-declarations-for-variable (declarations var)
+  "Walk all (DECLARE ...) forms in DECLARATIONS and extract clauses that
+apply to VAR.
+
+Returns (values CLAUSES-FOR-VAR REMAINING-DECLARATIONS):
+
+  CLAUSES-FOR-VAR is a list of bare declaration clauses ready to be
+    spliced into another (DECLARE ...) form.
+
+  REMAINING-DECLARATIONS is a list of (DECLARE ...) forms with VAR's
+    clauses removed; (DECLARE ...) forms whose clauses are entirely
+    consumed are dropped."
+  (let (mine remaining-forms)
+    (dolist (decl-form declarations)
+      (let (kept-clauses)
+        (dolist (clause (rest decl-form))
+          (cl:multiple-value-bind (m r) (split-declaration-clause clause var)
+            (when m (push m mine))
+            (when r (push r kept-clauses))))
+        (when kept-clauses
+          (push `(declare ,@(nreverse kept-clauses)) remaining-forms))))
+    (values (nreverse mine) (nreverse remaining-forms))))
+
 (defun-compile-time self-evaluating? (thing)
   (and (not (consp thing))
        (or (not (symbolp thing))
@@ -1838,14 +1905,25 @@ SYMBOL-MACRO-BINDINGS is a list of (name expansion) forms."
                             (list (the (and ,@types) ,form))))
                        ;; Peal off LAMBDA, arguments, and DECLARE.
                        ,@(rest (rest (rest (second continuation)))))))
-               ((or (and (consp form)
-                         (not
-                          (and (eq (first form) 'function)
-                               (null (rest (last form)))
-                               (= (length form) 2)
-                               (symbolp (second form)))))
-                    (and (symbolp form) (symbol-package form))
-                    (symbol-package (magic-continuation-argument continuation)))
+               (t
+                ;; Always materialise the continuation argument as a
+                ;; real LET binding rather than substituting FORM
+                ;; textually through the continuation body. The
+                ;; previous SUBST-based branch (kept here only as the
+                ;; outer T fallback) was unsound whenever both the
+                ;; continuation argument and FORM were uninterned
+                ;; gensyms, per the original authors' note: SUBST
+                ;; walks indiscriminately, rewriting symbols inside
+                ;; DECLARE clauses, SETQ targets, SETF places, and
+                ;; other positions where the symbol identity, not the
+                ;; value, is what matters. Host LOOP macros routinely
+                ;; produce such gensyms (e.g. SBCL's
+                ;; WITH-LOOP-LIST-COLLECTION-HEAD generates HEAD/TAIL
+                ;; gensyms used as both values and SETQ targets); the
+                ;; SUBST aliasing then collapses HEAD and TAIL into
+                ;; the same variable and corrupts the accumulator.
+                ;; The LET binding is correct in all cases and only
+                ;; adds a binding the host compiler trivially elides.
                 (if (null types)
                     `(let ((,(magic-continuation-argument continuation) ,form))
                        ,@(if (and *dynamic-extent?* (is-magic-continuation? form))
@@ -1860,23 +1938,7 @@ SYMBOL-MACRO-BINDINGS is a list of (name expansion) forms."
                         (type (and ,@types)
                               ,(magic-continuation-argument continuation)))
                        ;; Peal off LAMBDA, arguments, and DECLARE.
-                       ,@(rest (rest (rest (second continuation)))))))
-               ;; note: This case may be unsoundly taken in the following cases:
-               ;;       a. (MAGIC-CONTINUATION-ARGUMENT CONTINUATION) is a
-               ;;          non-Screamer GENSYM. This can only happen if a
-               ;;          a BINDING-VARIABLE is a GENSYM in CPS-CONVERT-LET*.
-               ;;       b. FORM is a non-Screamer GENSYM
-               (t (if (null types)
-                      (subst form
-                             (magic-continuation-argument continuation)
-                             ;; Peal off LAMBDA, arguments, and DECLARE.
-                             `(progn ,@(rest (rest (rest (second continuation)))))
-                             :test #'eq)
-                      (subst `(the (and ,@types) ,form)
-                             (magic-continuation-argument continuation)
-                             ;; Peal off LAMBDA, arguments, and DECLARE.
-                             `(progn ,@(rest (rest (rest (second continuation)))))
-                             :test #'eq)))))
+                       ,@(rest (rest (rest (second continuation)))))))))
            (progn
              (unless (null (second (second continuation)))
                (error "Please report this bug; This shouldn't happen (C)"))
@@ -1999,35 +2061,53 @@ SYMBOL-MACRO-BINDINGS is a list of (name expansion) forms."
                                       types
                                       value?
                                       environment)
-  (if (null bindings)
-      (if (null declarations)
-          (cps-convert-progn body continuation types value? environment)
-          `(let ()
-             ,@declarations
-             ,(cps-convert-progn body continuation types value? environment)))
-      (let* ((binding (first bindings))
-             (binding-variable
-              (if (symbolp binding) binding (first binding)))
-             (binding-form
-              (if (and (consp binding) (= (length binding) 2))
-                  (second binding)
-                  nil))
-             (other-arguments (gensym "OTHER-")))
-        (cps-convert
-         binding-form
-         `#'(lambda (&optional ,binding-variable &rest ,other-arguments)
-              (declare (magic)
-                       (ignore ,other-arguments))
-              ,(cps-convert-let* (rest bindings)
-                                 body
-                                 declarations
-                                 continuation
-                                 types
-                                 value?
-                                 environment))
-         '()
-         t
-         environment))))
+  ;; Each binding (VAR INIT) becomes a continuation lambda whose
+  ;; parameter is VAR, so that lambda is the new binding form for
+  ;; VAR. Declarations from the original LET* are partitioned
+  ;; binding by binding: clauses that apply to VAR are spliced into
+  ;; VAR's lambda's (DECLARE (MAGIC) ...), preserving
+  ;; binding-scoped semantics for DYNAMIC-EXTENT, IGNORE, TYPE,
+  ;; etc. Multi-variable clauses such as (DYNAMIC-EXTENT V1 V2) are
+  ;; split so each variable receives the clause attached to its
+  ;; own lambda. Declarations that survive past the last binding
+  ;; (non-binding-scoped or referencing variables not in BINDINGS)
+  ;; wrap the body via LOCALLY -- placing them in a (LET () ...)
+  ;; with no bindings was the previous behaviour and produced
+  ;; "No <var> variable" warnings under SBCL when the surviving
+  ;; clauses still mentioned a variable from an outer lambda.
+  (cond
+    ((null bindings)
+     (if (null declarations)
+         (cps-convert-progn body continuation types value? environment)
+         `(locally ,@declarations
+            ,(cps-convert-progn body continuation types value? environment))))
+    (t
+     (let* ((binding (first bindings))
+            (binding-variable
+             (if (symbolp binding) binding (first binding)))
+            (binding-form
+             (if (and (consp binding) (= (length binding) 2))
+                 (second binding)
+                 nil))
+            (other-arguments (gensym "OTHER-")))
+       (cl:multiple-value-bind (mine remaining)
+           (partition-declarations-for-variable declarations binding-variable)
+         (cps-convert
+          binding-form
+          `#'(lambda (&optional ,binding-variable &rest ,other-arguments)
+               (declare (magic)
+                        (ignore ,other-arguments)
+                        ,@mine)
+               ,(cps-convert-let* (rest bindings)
+                                  body
+                                  remaining
+                                  continuation
+                                  types
+                                  value?
+                                  environment))
+          '()
+          t
+          environment))))))
 
 (defun-compile-time cps-convert-multiple-value-call-internal
     (nondeterministic? function forms continuation types value? environment
