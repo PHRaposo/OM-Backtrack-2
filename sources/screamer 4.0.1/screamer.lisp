@@ -580,7 +580,7 @@ SYMBOL-MACRO-BINDINGS is a list of (name expansion) forms."
 
 (defun-compile-time walk-catch
     (map-function reduce-function screamer? partial? nested? form environment)
-  (unless (null (rest (last form))) (error "Improper PROGN: ~S" form))
+  (unless (null (rest (last form))) (error "Improper CATCH: ~S" form))
   (unless (>= (length form) 2)
     (error "CATCH must have at least one argument, a TAG: ~S" form))
   (if reduce-function
@@ -613,7 +613,7 @@ SYMBOL-MACRO-BINDINGS is a list of (name expansion) forms."
                                          :execute
                                          compile
                                          load
-                                         evel)
+                                         eval)
                              :test #'eq))
                  (second form))
     (error "Invalid SITUATION: ~S" form))
@@ -864,20 +864,25 @@ SYMBOL-MACRO-BINDINGS is a list of (name expansion) forms."
     (error "Invalid BINDINGS for MACROLET: ~S" form))
   (if reduce-function
       (let ((new-environment
-             (augment-environment-with-macros environment (second form))))
-        (funcall
-         reduce-function
-         (funcall map-function form 'macrolet)
-         (reduce reduce-function
-                 (mapcar #'(lambda (subform)
-                             (walk map-function
-                                   reduce-function
-                                   screamer?
-                                   partial?
-                                   nested?
-                                   subform
-                                   new-environment))
-                         (rest (rest form))))))
+             (if (null (second form))
+                 environment
+                 (augment-environment-with-macros environment (second form)))))
+        (cl:multiple-value-bind (body declarations)
+            (peal-off-documentation-string-and-declarations (rest (rest form)))
+          (declare (ignore declarations))
+          (funcall
+           reduce-function
+           (funcall map-function form 'macrolet)
+           (reduce reduce-function
+                   (mapcar #'(lambda (subform)
+                               (walk map-function
+                                     reduce-function
+                                     screamer?
+                                     partial?
+                                     nested?
+                                     subform
+                                     new-environment))
+                           body)))))
       (funcall map-function form 'macrolet)))
 
 (defun-compile-time walk-symbol-macrolet
@@ -896,21 +901,62 @@ SYMBOL-MACRO-BINDINGS is a list of (name expansion) forms."
     (error "Invalid BINDINGS for SYMBOL-MACROLET: ~S" form))
   (if reduce-function
       (let ((new-environment
-             (augment-environment-with-symbol-macros environment (second form))))
-        (funcall
-         reduce-function
-         (funcall map-function form 'symbol-macrolet)
-         (reduce reduce-function
-                 (mapcar #'(lambda (subform)
-                             (walk map-function
-                                   reduce-function
-                                   screamer?
-                                   partial?
-                                   nested?
-                                   subform
-                                   new-environment))
-                         (rest (rest form))))))
+             (if (null (second form))
+                 environment
+                 (augment-environment-with-symbol-macros environment (second form)))))
+        (cl:multiple-value-bind (body declarations)
+            (peal-off-documentation-string-and-declarations (rest (rest form)))
+          (declare (ignore declarations))
+          (funcall
+           reduce-function
+           (funcall map-function form 'symbol-macrolet)
+           (reduce reduce-function
+                   (mapcar #'(lambda (subform)
+                               (walk map-function
+                                     reduce-function
+                                     screamer?
+                                     partial?
+                                     nested?
+                                     subform
+                                     new-environment))
+                           body)))))
       (funcall map-function form 'symbol-macrolet)))
+
+(defun-compile-time walk-load-time-value
+    (map-function reduce-function screamer? partial? nested? form environment)
+  ;; LOAD-TIME-VALUE's body is evaluated once at load time, in a
+  ;; deterministic context with no LOCAL/GLOBAL trail and no Screamer
+  ;; search driver. It is opaque to the runtime walker concerns
+  ;; (SETQ/SETF tracking, CPS conversion, callee detection): walking
+  ;; the inner form would either be a no-op or actively wrong (e.g.
+  ;; rewriting a load-time SETQ as if it needed runtime trail tracking).
+  ;; Treat the whole form as a constant, like QUOTE.
+  (declare (ignore reduce-function screamer? partial? nested? environment))
+  (unless (null (rest (last form))) (error "Improper LOAD-TIME-VALUE: ~S" form))
+  (unless (or (= (length form) 2) (= (length form) 3))
+    (error "LOAD-TIME-VALUE must have one or two arguments: ~S" form))
+  (funcall map-function form 'load-time-value))
+
+(defun-compile-time walk-locally
+    (map-function reduce-function screamer? partial? nested? form environment)
+  (unless (null (rest (last form))) (error "Improper LOCALLY: ~S" form))
+  (if reduce-function
+      (cl:multiple-value-bind (body declarations)
+          (peal-off-documentation-string-and-declarations (rest form))
+        (declare (ignore declarations))
+        (funcall reduce-function
+                 (funcall map-function form 'locally)
+                 (reduce reduce-function
+                         (mapcar #'(lambda (subform)
+                                     (walk map-function
+                                           reduce-function
+                                           screamer?
+                                           partial?
+                                           nested?
+                                           subform
+                                           environment))
+                                 body))))
+      (funcall map-function form 'locally)))
 
 (defun-compile-time walk-multiple-value-call
     (map-function reduce-function screamer? partial? nested? form environment)
@@ -1063,7 +1109,7 @@ SYMBOL-MACRO-BINDINGS is a list of (name expansion) forms."
   (unless (every #'(lambda (subform)
                      (or (symbolp subform) (integerp subform) (listp subform)))
                  (rest form))
-    (error "A subforms of a TAGBODY must be symbols, integers or lists: ~S"
+    (error "Subforms of a TAGBODY must be symbols, integers or lists: ~S"
            form))
   (let ((tags (remove-if #'consp (rest form))))
     (unless (= (length tags) (length (remove-duplicates tags)))
@@ -1343,10 +1389,11 @@ SYMBOL-MACRO-BINDINGS is a list of (name expansion) forms."
 ;;;   LAMBDA-LIST VARIABLE
 ;;;  Special forms:
 ;;;   BLOCK CATCH EVAL-WHEN FLET FUNCTION-LAMBDA FUNCTION-SYMBOL FUNCTION-SETF
-;;;   GO IF LABELS LET LET* MULTIPLE-VALUE-CALL MULTIPLE-VALUE-PROG1 PROGN
-;;;   PROGV QUOTE RETURN-FROM SETQ TAGBODY THE THROW UNWIND-PROTECT
-;;;  Symbolics special forms:
-;;;   SYS:VARIABLE-LOCATION COMPILER:INVISIBLE-REFERENCES
+;;;   GO IF LABELS LET LET* LOAD-TIME-VALUE LOCALLY MACROLET
+;;;   MULTIPLE-VALUE-CALL MULTIPLE-VALUE-PROG1 PROGN PROGV QUOTE RETURN-FROM
+;;;   SETQ SYMBOL-MACROLET TAGBODY THE THROW UNWIND-PROTECT
+;;;  Implementation-specific special forms:
+;;;   CCL:COMPILER-LET (Clozure CL only; walked as LET)
 ;;;  Screamer special forms:
 ;;;   FOR-EFFECTS LOCAL-SETF
 ;;;  Partial special forms:
@@ -1404,16 +1451,18 @@ SYMBOL-MACRO-BINDINGS is a list of (name expansion) forms."
      (walk-let/let*
       map-function reduce-function screamer? partial? nested? form environment
       'let*))
+    ((eq (first form) 'load-time-value)
+     (walk-load-time-value
+      map-function reduce-function screamer? partial? nested? form environment))
     ((eq (first form) 'macrolet)
      (walk-macrolet
       map-function reduce-function screamer? partial? nested? form environment))
     ((eq (first form) 'symbol-macrolet)
      (walk-symbol-macrolet
       map-function reduce-function screamer? partial? nested? form environment))
-    ;; needs work: This is a temporary kludge to support MCL.
-    ((and (eq (first form) 'locally) (null (fourth form)))
-     (walk map-function reduce-function screamer? partial? nested? (third form)
-           environment))
+    ((eq (first form) 'locally)
+     (walk-locally
+      map-function reduce-function screamer? partial? nested? form environment))
     ((eq (first form) 'multiple-value-call)
      (walk-multiple-value-call
       map-function reduce-function screamer? partial? nested? form environment))
@@ -1523,6 +1572,41 @@ SYMBOL-MACRO-BINDINGS is a list of (name expansion) forms."
           ,@declarations
           ,@(mapcar
              #'(lambda (subform) (funcall function subform environment)) body))))
+    (macrolet
+     (let* ((bindings (second form))
+            (new-environment (if (null bindings)
+                                 environment
+                                 (augment-environment-with-macros
+                                  environment bindings))))
+       (cl:multiple-value-bind (body declarations)
+           (peal-off-documentation-string-and-declarations (rest (rest form)))
+         `(macrolet ,bindings
+            ,@declarations
+            ,@(mapcar #'(lambda (subform)
+                          (funcall function subform new-environment))
+                      body)))))
+    (symbol-macrolet
+     (let* ((bindings (second form))
+            (new-environment (if (null bindings)
+                                 environment
+                                 (augment-environment-with-symbol-macros
+                                  environment bindings))))
+       (cl:multiple-value-bind (body declarations)
+           (peal-off-documentation-string-and-declarations (rest (rest form)))
+         `(symbol-macrolet ,bindings
+            ,@declarations
+            ,@(mapcar #'(lambda (subform)
+                          (funcall function subform new-environment))
+                      body)))))
+    (locally
+     (cl:multiple-value-bind (body declarations)
+         (peal-off-documentation-string-and-declarations (rest form))
+       `(locally
+          ,@declarations
+          ,@(mapcar #'(lambda (subform)
+                        (funcall function subform environment))
+                    body))))
+    (load-time-value form)
     (progn
       `(progn ,@(mapcar
                  #'(lambda (subform) (funcall function subform environment))
@@ -2466,6 +2550,15 @@ SYMBOL-MACRO-BINDINGS is a list of (name expansion) forms."
                           (augment-environment-with-symbol-macros environment (second form))))
                      (cps-convert-progn
                       (rest (rest form)) continuation types value? new-environment)))
+                  (locally
+                   (cl:multiple-value-bind (body declarations)
+                       (peal-off-documentation-string-and-declarations (rest form))
+                     (if (null declarations)
+                         (cps-convert-progn
+                          body continuation types value? environment)
+                         `(locally ,@declarations
+                            ,(cps-convert-progn
+                              body continuation types value? environment)))))
                   (multiple-value-call
                       (cps-convert-multiple-value-call
                        nil
@@ -2572,9 +2665,9 @@ SYMBOL-MACRO-BINDINGS is a list of (name expansion) forms."
                                          value?
                                          environment)))
                   (otherwise
-                   (screamer-error
-                    "Cannot (currently) handle the special form ~S inside a~%~
-                  nondeterministic context."
+                   (error
+                    "Cannot (currently) handle the special form ~S inside a ~
+                     nondeterministic context."
                     (first form))))))
         nil
         t
@@ -5160,11 +5253,9 @@ Otherwise returns the value of X."
                                      *max-denom*))))))))
          ((some #'(lambda (element) (< element lower-bound))
                    (variable-enumerated-domain x))
-             ;; note: Could do less consing if had LOCAL DELETE-IF.
-             ;;       This would also allow checking list only once.
              (set-enumerated-domain!
               x (remove-if #'(lambda (element) (< element lower-bound))
-                           (variable-enumerated-domain x)))))                    
+                           (variable-enumerated-domain x)))))
       (run-noticers x))))
 
 (defun restrict-upper-bound! (x upper-bound)
@@ -5235,11 +5326,9 @@ Otherwise returns the value of X."
                                          *max-denom*))))))))
       ((some #'(lambda (element) (> element upper-bound))
               (variable-enumerated-domain x))
-        ;; note: Could do less consing if had LOCAL DELETE-IF.
-        ;;       This would also allow checking list only once.     
         (set-enumerated-domain!
         x (remove-if #'(lambda (element) (> element upper-bound))
-                      (variable-enumerated-domain x)))))                
+                      (variable-enumerated-domain x)))))
     (run-noticers x))))
 
 (defun restrict-bounds! (x lower-bound upper-bound)
@@ -5346,13 +5435,11 @@ Otherwise returns the value of X."
                      (and upper-bound
                           (some #'(lambda (element) (> element upper-bound))
                                 (variable-enumerated-domain x))))
-                 ;; note: Could do less consing if had LOCAL DELETE-IF.
-                 ;;       This would also allow checking list only once.
                  (set-enumerated-domain!
                   x (remove-if #'(lambda (element)
                                    (or (and lower-bound (< element lower-bound))
                                        (and upper-bound (> element upper-bound))))
-                               (variable-enumerated-domain x)))))                 
+                               (variable-enumerated-domain x)))))
           (run-noticers x)))))
 
 (defun prune-enumerated-domain (x &optional (enumerated-domain (variable-enumerated-domain x)))
@@ -8085,7 +8172,6 @@ sufficient hooks for the user to define her own force functions.)"
     (if (and (not (eq (variable-enumerated-domain unassigned-variable) t))
              (not (null (rest (variable-enumerated-domain
                                unassigned-variable)))))
-        ;; note: Could do less consing if had LOCAL DELETE-IF-NOT.
         ;; note: Consing.
         (let* ((variable-values (deep-value-of variables))
                (new-enumerated-domain
@@ -8122,7 +8208,6 @@ sufficient hooks for the user to define her own force functions.)"
                              (eq (variable-enumerated-domain variable) t)))
                 (variables-in variables))
     (dolist (variable (variables-in variables))
-      ;; note: Could do less consing if had LOCAL DELETE-IF-NOT.
       (if (not (deep-bound? variable))
           (let ((new-enumerated-domain
                  (if polarity?
@@ -9817,10 +9902,6 @@ sufficient hooks for the user to define her own force functions.)"
         (reorder-internal
          variables cost-function terminate? order force-function))))
 
-;;; FIXME: This doesn't make any sense. See branch "maybe" for an alternative
-;;; expression. Also: why are we trying to increase the upper bound, and not
-;;; the lower bound? Should the API also not allow us to minimize a variable
-;;; towards either zero or negative infinity? --ns 2011-11-01
 (defmacro-compile-time best-value
     (form1 objective-form &optional (form2 nil form2?))
   "First evaluates OBJECTIVE-FORM, which should evaluate to constraint variable V.
