@@ -353,7 +353,7 @@ MACRO-BINDINGS is a list of (name lambda-list . body) forms."
                   macro-bindings))
   #+allegro
   (sys:augment-environment
-   environment
+   (or environment (sys:ensure-portable-walking-environment nil))
    :macro (mapcar #'(lambda (binding)
                       (list (first binding)
                             (compile nil
@@ -389,7 +389,7 @@ SYMBOL-MACRO-BINDINGS is a list of (name expansion) forms."
                          symbol-macro-bindings))
   #+allegro
   (sys:augment-environment
-   environment
+   (or environment (sys:ensure-portable-walking-environment nil))
    :symbol-macro (mapcar #'(lambda (binding)
                              (list (first binding) (second binding)))
                          symbol-macro-bindings))
@@ -1300,14 +1300,19 @@ SYMBOL-MACRO-BINDINGS is a list of (name expansion) forms."
                      (let ((*macroexpand-hook* #'funcall))
                        (macroexpand-1 form environment))
                      environment))
-      (walk map-function
-            reduce-function
-            screamer?
-            partial?
-            nested?
-            (let ((*macroexpand-hook* #'funcall))
-              (macroexpand-1 form environment))
-            environment)))
+      (progn
+        (when (and screamer?
+                   (eq (first form) 'loop)
+                   (not (deterministic? form environment)))
+          (error "Cannot (currently) handle LOOP in a nondeterministic context."))
+        (walk map-function
+              reduce-function
+              screamer?
+              partial?
+              nested?
+              (let ((*macroexpand-hook* #'funcall))
+                (macroexpand-1 form environment))
+              environment))))
 
 (defun-compile-time walk-function-call
     (map-function reduce-function screamer? partial? nested? form environment)
