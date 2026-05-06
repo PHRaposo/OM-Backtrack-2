@@ -312,59 +312,75 @@ Returns (values CLAUSES-FOR-VAR REMAINING-DECLARATIONS):
 
 ;;; Support for MACROLET and SYMBOL-MACROLET
 
+(defun-compile-time strip-macro-extras (lambda-list)
+  "Strip &ENVIRONMENT and &WHOLE from a macro lambda list. Per CLHS 3.4.4 each may appear at most once."
+  (let ((env-var nil)
+        (whole-var nil)
+        (clean nil)
+        (rest lambda-list))
+    (loop while rest do
+          (let ((head (car rest)))
+            (cond ((eq head '&environment)
+                   (when env-var
+                     (error "repeated &ENVIRONMENT in macro lambda list: ~S"
+                            lambda-list))
+                   (setf env-var (second rest)) (setf rest (cddr rest)))
+                  ((eq head '&whole)
+                   (when whole-var
+                     (error "repeated &WHOLE in macro lambda list: ~S"
+                            lambda-list))
+                   (setf whole-var (second rest)) (setf rest (cddr rest)))
+                  (t (push head clean) (setf rest (cdr rest))))))
+    (values (nreverse clean) env-var whole-var)))
+
+(defun-compile-time inject-aux-bindings (lambda-list aux-additions)
+  "Append AUX-ADDITIONS to LAMBDA-LIST's &aux section, creating &aux if absent."
+  (if (null aux-additions)
+      lambda-list
+      (let ((aux-pos (position '&aux lambda-list)))
+        (if aux-pos
+            (append (subseq lambda-list 0 aux-pos)
+                    (cons '&aux
+                          (append (subseq lambda-list (1+ aux-pos))
+                                  aux-additions)))
+            (append lambda-list (cons '&aux aux-additions))))))
+
+(defun-compile-time build-macrolet-expander (binding)
+  "Compile a macro function for one MACROLET binding."
+  (cl:multiple-value-bind (clean-ll env-var whole-var)
+      (strip-macro-extras (second binding))
+    (cl:multiple-value-bind (real-body user-decls user-doc)
+        (peal-off-documentation-string-and-declarations (cddr binding) t)
+      (let* ((form-gensym (gensym "FORM"))
+             (env-gensym (gensym "ENV"))
+             (aux-additions
+               (append (when whole-var `((,whole-var ,form-gensym)))
+                       (when env-var `((,env-var ,env-gensym)))))
+             (full-ll (inject-aux-bindings clean-ll aux-additions)))
+        (compile nil
+                 `(lambda (,form-gensym ,env-gensym)
+                    ,@(when user-doc (list user-doc))
+                    (declare (ignorable ,form-gensym ,env-gensym))
+                    (destructuring-bind ,full-ll (rest ,form-gensym)
+                      ,@user-decls
+                      ,@real-body)))))))
+
 (defun-compile-time augment-environment-with-macros (environment macro-bindings)
   "Create an augmented environment with local macro definitions.
 MACRO-BINDINGS is a list of (name lambda-list . body) forms."
-  #+sbcl
-  (sb-cltl2:augment-environment
-   environment
-   :macro (mapcar #'(lambda (binding)
-                      (list (first binding)
-                            (compile nil
-                                     `(lambda (form env)
-                                        (declare (ignore env))
-                                        (destructuring-bind ,(second binding)
-                                            (rest form)
-                                          ,@(rest (rest binding)))))))
-                  macro-bindings))
-  #+ccl
-  (ccl:augment-environment
-   environment
-   :macro (mapcar #'(lambda (binding)
-                      (list (first binding)
-                            (compile nil
-                                     `(lambda (form env)
-                                        (declare (ignore env))
-                                        (destructuring-bind ,(second binding)
-                                            (rest form)
-                                          ,@(rest (rest binding)))))))
-                  macro-bindings))
-  #+lispworks
-  (hcl:augment-environment
-   environment
-   :macro (mapcar #'(lambda (binding)
-                      (list (first binding)
-                            (compile nil
-                                     `(lambda (form env)
-                                        (declare (ignore env))
-                                        (destructuring-bind ,(second binding)
-                                            (rest form)
-                                          ,@(rest (rest binding)))))))
-                  macro-bindings))
-  #+allegro
-  (sys:augment-environment
-   (or environment (sys:ensure-portable-walking-environment nil))
-   :macro (mapcar #'(lambda (binding)
-                      (list (first binding)
-                            (compile nil
-                                     `(lambda (form env)
-                                        (declare (ignore env))
-                                        (destructuring-bind ,(second binding)
-                                            (rest form)
-                                          ,@(rest (rest binding)))))))
-                  macro-bindings))
-  #-(or sbcl ccl lispworks allegro)
-  (error "MACROLET is not supported on this Common Lisp implementation. Supported implementations: SBCL, CCL (Clozure CL), LispWorks, Allegro CL."))
+  (let ((macros (mapcar #'(lambda (binding)
+                            (list (first binding)
+                                  (build-macrolet-expander binding)))
+                        macro-bindings)))
+    #+sbcl     (sb-cltl2:augment-environment environment :macro macros)
+    #+ccl      (ccl:augment-environment environment :macro macros)
+    #+lispworks (hcl:augment-environment environment :macro macros)
+    #+allegro  (sys:augment-environment
+                (or environment (sys:ensure-portable-walking-environment nil))
+                :macro macros)
+    #-(or sbcl ccl lispworks allegro)
+    (progn macros
+           (error "MACROLET is not supported on this Common Lisp implementation. Supported implementations: SBCL, CCL (Clozure CL), LispWorks, Allegro CL."))))
 
 (defun-compile-time augment-environment-with-symbol-macros (environment symbol-macro-bindings)
   "Create an augmented environment with local symbol-macro definitions.
@@ -1287,6 +1303,345 @@ SYMBOL-MACRO-BINDINGS is a list of (name expansion) forms."
     (error "FULL must have exactly one argument, a FORM: ~S" form))
   (funcall map-function form 'full))
 
+(defun-compile-time walk-loop-collect-bound-symbols (form)
+  "Symbols bound by LET/LET*/MV-BIND/FLET/LABELS/LAMBDA in FORM."
+  (let ((vars '()))
+    (labels ((push-binding (b)
+               (pushnew (if (consp b) (first b) b) vars))
+             (push-lambda-list (ll)
+               (dolist (item ll)
+                 (cond
+                   ((symbolp item)
+                    (unless (member item lambda-list-keywords)
+                      (pushnew item vars)))
+                   ((consp item)
+                    (push-binding item)))))
+             (walk (x)
+               (when (consp x)
+                 (case (car x)
+                   ((let let*)
+                    (dolist (b (second x)) (push-binding b))
+                    (mapc #'walk (cddr x)))
+                   ((multiple-value-bind)
+                    (dolist (v (second x)) (pushnew v vars))
+                    (mapc #'walk (cdddr x)))
+                   ((flet labels)
+                    (dolist (def (second x))
+                      (push-lambda-list (second def))
+                      (mapc #'walk (cddr def)))
+                    (mapc #'walk (cddr x)))
+                   ((lambda)
+                    (push-lambda-list (second x))
+                    (mapc #'walk (cddr x)))
+                   ((quote function) nil)
+                   (t (mapc #'walk x))))))
+      (walk form))
+    vars))
+
+
+(defun-compile-time walk-loop-instrument-one-setq (pair loop-vars walker)
+  ;; EXPR evaluated BEFORE snapshot+trail so EITHER inside EXPR captures its
+  ;; choice-point first; otherwise backtrack leaves the mutation stranded.
+  (let ((var (car pair))
+        (expr (funcall walker (cdr pair) loop-vars)))
+    (cond
+      ((member var loop-vars :test #'eq)
+       (let ((v (gensym "V-"))
+             (old (gensym "OLD-")))
+         `(let* ((,v ,expr)
+                 (,old ,var))
+            (when *nondeterministic-context*
+              (trail #'(lambda () (setq ,var ,old))))
+            (setq ,var ,v))))
+      (t
+       `(setq ,var ,expr)))))
+
+
+(defun-compile-time walk-loop-instrument-setq (form loop-vars walker)
+  (let ((pairs (loop for cell on (cdr form) by #'cddr
+                     collect (cons (first cell) (second cell)))))
+    (cond
+      ((null pairs) form)
+      ((null (cdr pairs))
+       (walk-loop-instrument-one-setq (car pairs) loop-vars walker))
+      (t
+       `(progn
+          ,@(mapcar (lambda (p)
+                      (walk-loop-instrument-one-setq p loop-vars walker))
+                    pairs))))))
+
+
+(defun-compile-time walk-loop-instrument-rplaca (form loop-vars walker)
+  (let ((cons-sym (gensym "CONS-"))
+        (val-sym (gensym "VAL-"))
+        (old-sym (gensym "OLD-CAR-"))
+        (cons-expr (funcall walker (second form) loop-vars))
+        (val-expr (funcall walker (third form) loop-vars)))
+    `(let* ((,cons-sym ,cons-expr)
+            (,val-sym ,val-expr)
+            (,old-sym (car ,cons-sym)))
+       (when *nondeterministic-context*
+         (trail #'(lambda () (rplaca ,cons-sym ,old-sym))))
+       (rplaca ,cons-sym ,val-sym))))
+
+
+(defun-compile-time walk-loop-instrument-rplacd (form loop-vars walker)
+  (let ((cons-sym (gensym "CONS-"))
+        (val-sym (gensym "VAL-"))
+        (old-sym (gensym "OLD-CDR-"))
+        (cons-expr (funcall walker (second form) loop-vars))
+        (val-expr (funcall walker (third form) loop-vars)))
+    `(let* ((,cons-sym ,cons-expr)
+            (,val-sym ,val-expr)
+            (,old-sym (cdr ,cons-sym)))
+       (when *nondeterministic-context*
+         (trail #'(lambda () (rplacd ,cons-sym ,old-sym))))
+       (rplacd ,cons-sym ,val-sym))))
+
+
+#+sbcl
+(defun-compile-time walk-loop-sbcl-instrument (form loop-vars)
+  (cond
+    ((atom form) form)
+    ((eq (car form) 'quote) form)
+    ((eq (car form) 'function) form)
+    ((eq (car form) 'setq)
+     (walk-loop-instrument-setq form loop-vars #'walk-loop-sbcl-instrument))
+    ((eq (car form) 'rplaca)
+     (walk-loop-instrument-rplaca form loop-vars #'walk-loop-sbcl-instrument))
+    ((eq (car form) 'rplacd)
+     (walk-loop-instrument-rplacd form loop-vars #'walk-loop-sbcl-instrument))
+    ;; COLLECT egress -- copy-list shields all-values from trailed rplacds.
+    ((and (eq (car form) 'sb-ext:truly-the)
+          (eq (second form) 'list))
+     `(copy-list ,(walk-loop-sbcl-instrument (third form) loop-vars)))
+    ;; Force heap allocation of head cons (DX cons + trail closure = UAF).
+    ((and (fboundp 'sb-kernel::unaligned-dx-cons)
+          (eq (car form) (find-symbol "UNALIGNED-DX-CONS" "SB-KERNEL")))
+     `(cons ,(walk-loop-sbcl-instrument (second form) loop-vars) nil))
+    (t
+     (cons (walk-loop-sbcl-instrument (car form) loop-vars)
+           (mapcar (lambda (f) (walk-loop-sbcl-instrument f loop-vars))
+                   (cdr form))))))
+
+#+sbcl
+(defun-compile-time walk-loop-sbcl (form &optional environment)
+  (let* ((expanded (sb-cltl2:macroexpand-all form environment))
+         (loop-vars (walk-loop-collect-bound-symbols expanded)))
+    (walk-loop-sbcl-instrument expanded loop-vars)))
+
+
+#+lispworks
+(defun-compile-time walk-loop-lispworks-instrument-loop-set-cdr (form loop-vars walker)
+  (let ((cons-sym (gensym "CONS-"))
+        (val-sym (gensym "VAL-"))
+        (old-sym (gensym "OLD-CDR-"))
+        (cons-expr (funcall walker (second form) loop-vars))
+        (val-expr (funcall walker (third form) loop-vars)))
+    `(let* ((,cons-sym ,cons-expr)
+            (,val-sym ,val-expr)
+            (,old-sym (cdr ,cons-sym)))
+       (when *nondeterministic-context*
+         (trail #'(lambda () (rplacd ,cons-sym ,old-sym))))
+       (loop::loop-set-cdr ,cons-sym ,val-sym))))
+
+#+lispworks
+(defun-compile-time walk-loop-lispworks-instrument (form loop-vars)
+  (cond
+    ((atom form) form)
+    ((eq (car form) 'quote) form)
+    ((eq (car form) 'function) form)
+    ((eq (car form) 'setq)
+     (walk-loop-instrument-setq form loop-vars #'walk-loop-lispworks-instrument))
+    ;; INCF/DECF -- LW's walker leaves these unexpanded; rewrite to SETQ
+    ;; so the SETQ instrumentation fires for SUM/COUNT clauses.
+    ((and (eq (car form) 'incf)
+          (member (second form) loop-vars :test #'eq))
+     (let ((var (second form))
+           (amount (or (third form) 1)))
+       (walk-loop-lispworks-instrument
+         `(setq ,var (+ ,var ,amount))
+         loop-vars)))
+    ((and (eq (car form) 'decf)
+          (member (second form) loop-vars :test #'eq))
+     (let ((var (second form))
+           (amount (or (third form) 1)))
+       (walk-loop-lispworks-instrument
+         `(setq ,var (- ,var ,amount))
+         loop-vars)))
+    ((eq (car form) 'rplaca)
+     (walk-loop-instrument-rplaca form loop-vars #'walk-loop-lispworks-instrument))
+    ((eq (car form) 'rplacd)
+     (walk-loop-instrument-rplacd form loop-vars #'walk-loop-lispworks-instrument))
+    ((and (symbolp (car form))
+          (eq (car form) (find-symbol "LOOP-SET-CDR" "LOOP")))
+     (walk-loop-lispworks-instrument-loop-set-cdr form loop-vars
+                                                  #'walk-loop-lispworks-instrument))
+    ;; COLLECT egress.
+    ((and (eq (car form) 'cdr)
+          (consp (second form))
+          (eq (car (second form)) 'the)
+          (eq (second (second form)) 'cons))
+     `(copy-list (cdr (the cons
+                           ,(walk-loop-lispworks-instrument (third (second form))
+                                                            loop-vars)))))
+    (t
+     (cons (walk-loop-lispworks-instrument (car form) loop-vars)
+           (mapcar (lambda (f) (walk-loop-lispworks-instrument f loop-vars))
+                   (cdr form))))))
+
+#+lispworks
+(defun-compile-time walk-loop-lispworks (form &optional environment)
+  (let* ((expanded (walker:walk-form
+                     form environment
+                     #'(lambda (sub context env)
+                         (declare (ignore context))
+                         (cond ((and (consp sub)
+                                     (symbolp (car sub))
+                                     (macro-function (car sub) env))
+                                (values (macroexpand-1 sub env) t))
+                               (t sub)))))
+         (loop-vars (walk-loop-collect-bound-symbols expanded)))
+    (walk-loop-lispworks-instrument expanded loop-vars)))
+
+
+#+(or ccl allegro)
+(defun-compile-time loop-list-head-p (sym)
+  "T iff SYM's name starts with LOOP-LIST-HEAD (gensym prefix used by both impls)."
+  (and (symbolp sym)
+       (let ((n (symbol-name sym)))
+         (and (>= (length n) 14)
+              (string= n "LOOP-LIST-HEAD" :end1 14)))))
+
+
+#+ccl
+(defun-compile-time walk-loop-ccl-instrument-set-cdr (form loop-vars walker)
+  (let ((cons-sym (gensym "CONS-"))
+        (val-sym (gensym "VAL-"))
+        (old-sym (gensym "OLD-CDR-"))
+        (cons-expr (funcall walker (second form) loop-vars))
+        (val-expr (funcall walker (third form) loop-vars)))
+    `(let* ((,cons-sym ,cons-expr)
+            (,val-sym ,val-expr)
+            (,old-sym (cdr ,cons-sym)))
+       (when *nondeterministic-context*
+         (trail #'(lambda () (rplacd ,cons-sym ,old-sym))))
+       (ccl::set-cdr ,cons-sym ,val-sym))))
+
+#+ccl
+(defun-compile-time walk-loop-ccl-instrument (form loop-vars)
+  (cond
+    ((atom form) form)
+    ((eq (car form) 'quote) form)
+    ((eq (car form) 'function) form)
+    ((eq (car form) 'setq)
+     (walk-loop-instrument-setq form loop-vars #'walk-loop-ccl-instrument))
+    ((eq (car form) 'rplaca)
+     (walk-loop-instrument-rplaca form loop-vars #'walk-loop-ccl-instrument))
+    ((eq (car form) 'rplacd)
+     (walk-loop-instrument-rplacd form loop-vars #'walk-loop-ccl-instrument))
+    ((and (symbolp (car form))
+          (eq (car form) (find-symbol "SET-CDR" "CCL")))
+     (walk-loop-ccl-instrument-set-cdr form loop-vars
+                                       #'walk-loop-ccl-instrument))
+    ((and (eq (car form) 'cdr)
+          (loop-list-head-p (second form)))
+     `(copy-list ,form))
+    (t
+     (cons (walk-loop-ccl-instrument (car form) loop-vars)
+           (mapcar (lambda (f) (walk-loop-ccl-instrument f loop-vars))
+                   (cdr form))))))
+
+#+ccl
+(defun-compile-time walk-loop-ccl (form &optional environment)
+  (let* ((expanded (ccl:macroexpand-all form environment))
+         (loop-vars (walk-loop-collect-bound-symbols expanded)))
+    (walk-loop-ccl-instrument expanded loop-vars)))
+
+
+#+allegro
+(defun-compile-time walk-loop-allegro-instrument-inv-cdr (form loop-vars walker)
+  (let ((cons-sym (gensym "CONS-"))
+        (val-sym (gensym "VAL-"))
+        (old-sym (gensym "OLD-CDR-"))
+        (cons-expr (funcall walker (second form) loop-vars))
+        (val-expr (funcall walker (third form) loop-vars)))
+    `(let* ((,cons-sym ,cons-expr)
+            (,val-sym ,val-expr)
+            (,old-sym (cdr ,cons-sym)))
+       (when *nondeterministic-context*
+         (trail #'(lambda () (rplacd ,cons-sym ,old-sym))))
+       (excl::.inv-cdr ,cons-sym ,val-sym))))
+
+#+allegro
+(defun-compile-time walk-loop-allegro-strip-dx (declare-form)
+  ;; Force heap allocation of LOOP-LIST-HEAD vars; DX cons + trail closure = UAF.
+  `(declare
+    ,@(mapcan (lambda (clause)
+                (cond
+                  ((and (consp clause)
+                        (eq (car clause) 'dynamic-extent)
+                        (every #'loop-list-head-p (cdr clause)))
+                   nil)
+                  ((and (consp clause)
+                        (eq (car clause) 'dynamic-extent))
+                   (let ((kept (remove-if #'loop-list-head-p (cdr clause))))
+                     (if kept (list `(dynamic-extent ,@kept)) nil)))
+                  (t (list clause))))
+              (cdr declare-form))))
+
+#+allegro
+(defun-compile-time walk-loop-allegro-instrument (form loop-vars)
+  (cond
+    ((atom form) form)
+    ((eq (car form) 'quote) form)
+    ((eq (car form) 'function) form)
+    ((eq (car form) 'declare)
+     (walk-loop-allegro-strip-dx form))
+    ((eq (car form) 'setq)
+     (walk-loop-instrument-setq form loop-vars #'walk-loop-allegro-instrument))
+    ((eq (car form) 'rplaca)
+     (walk-loop-instrument-rplaca form loop-vars #'walk-loop-allegro-instrument))
+    ((eq (car form) 'rplacd)
+     (walk-loop-instrument-rplacd form loop-vars #'walk-loop-allegro-instrument))
+    ((and (symbolp (car form))
+          (eq (car form) (find-symbol ".INV-CDR" "EXCL")))
+     (walk-loop-allegro-instrument-inv-cdr form loop-vars
+                                           #'walk-loop-allegro-instrument))
+    ((and (eq (car form) 'cdr)
+          (loop-list-head-p (second form)))
+     `(copy-list ,form))
+    (t
+     (cons (walk-loop-allegro-instrument (car form) loop-vars)
+           (mapcar (lambda (f) (walk-loop-allegro-instrument f loop-vars))
+                   (cdr form))))))
+
+#+allegro
+(defun-compile-time walk-loop-allegro (form &optional environment)
+  (let* ((expanded
+           #+(and allegro-version>= (version>= 8 0))
+           (excl::walk-form form environment)
+           #-(and allegro-version>= (version>= 8 0))
+           (excl::walk form))
+         (loop-vars (walk-loop-collect-bound-symbols expanded)))
+    (walk-loop-allegro-instrument expanded loop-vars)))
+
+
+(defun-compile-time walk-loop (form &optional environment)
+  "Walker entry point for CL:LOOP in nondeterministic context. Per-impl
+dispatch (SBCL/LispWorks/CCL/Allegro). See WALK-LOOP.md for design."
+  (declare (ignorable environment))
+  #+sbcl       (walk-loop-sbcl form environment)
+  #+lispworks  (walk-loop-lispworks form environment)
+  #+ccl        (walk-loop-ccl form environment)
+  #+allegro    (walk-loop-allegro form environment)
+  #-(or sbcl lispworks ccl allegro)
+               (screamer-error
+                "Cannot (currently) handle LOOP in a nondeterministic context on~%~
+                 this LISP implementation: ~S"
+                form))
+
+
 (defun-compile-time walk-macro-call
     (map-function reduce-function screamer? partial? nested? form environment)
   (if reduce-function
@@ -1300,19 +1655,18 @@ SYMBOL-MACRO-BINDINGS is a list of (name expansion) forms."
                      (let ((*macroexpand-hook* #'funcall))
                        (macroexpand-1 form environment))
                      environment))
-      (progn
-        (when (and screamer?
-                   (eq (first form) 'loop)
-                   (not (deterministic? form environment)))
-          (error "Cannot (currently) handle LOOP in a nondeterministic context."))
-        (walk map-function
-              reduce-function
-              screamer?
-              partial?
-              nested?
-              (let ((*macroexpand-hook* #'funcall))
-                (macroexpand-1 form environment))
-              environment))))
+      ;; CPS-rewrite path. CL:LOOP forms route through WALK-LOOP for trail-
+      ;; aware instrumentation; everything else macroexpands normally.
+      (walk map-function
+            reduce-function
+            screamer?
+            partial?
+            nested?
+            (let ((*macroexpand-hook* #'funcall))
+              (if (and (consp form) (eq (car form) 'loop))
+                  (walk-loop form environment)
+                  (macroexpand-1 form environment)))
+            environment)))
 
 (defun-compile-time walk-function-call
     (map-function reduce-function screamer? partial? nested? form environment)
@@ -1528,7 +1882,7 @@ SYMBOL-MACRO-BINDINGS is a list of (name expansion) forms."
     (walk-let/let*
       map-function reduce-function screamer? partial? nested? form environment
       'ccl:compiler-let))
-    ((special-operator-p (first form))
+    ((and (symbolp (first form)) (special-operator-p (first form)))
      (error "Cannot (currently) handle the special form ~S" (first form)))
     (t (walk-function-call
         map-function reduce-function screamer? partial? nested? form
