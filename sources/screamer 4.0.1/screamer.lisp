@@ -2790,7 +2790,6 @@ model cannot propagate through helper parameters."
                      `(flet ((,helper ,@(rest (second form))))
                         (declare (dynamic-extent #',helper))
                         (let ((,cvar #',helper))
-                          (declare (dynamic-extent ,cvar))
                           ;; Peal off LAMBDA, arguments, and DECLARE.
                           ,@(rest (rest (rest (second continuation))))))))
                   ((null types)
