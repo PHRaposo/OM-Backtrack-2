@@ -2578,25 +2578,25 @@ model cannot propagate through helper parameters."
 (defun-compile-time expand-local-setf (pairs environment)
   (if (null pairs)
       '(progn)
-      (let ((d (gensym "DUMMY-"))
-            (dummy-argument (gensym "DUMMY-")))
+      (let ((old (gensym "OLD-"))
+            (new (gensym "NEW-")))
         (cl:multiple-value-bind (vars vals stores store-form access-form)
             (get-setf-expansion (first pairs) environment)
           `(let* (,@(mapcar #'list vars vals)
-                  (,dummy-argument ,(second pairs))
-                    (,d ,access-form))
-             (trail #'(lambda () ,(subst d (first stores) store-form)))
+                  (,new ,(second pairs))
+                    (,old ,access-form))
+             (trail #'(lambda () ,(subst old (first stores) store-form)))
              ,@(if (null (rest (rest pairs)))
-                   (list (subst dummy-argument (first stores) store-form))
-                   (list (subst dummy-argument (first stores) store-form)
+                   (list (subst new (first stores) store-form))
+                   (list (subst new (first stores) store-form)
                          (expand-local-setf (rest (rest pairs)) environment))))))))
 
 (defun-compile-time expand-local-setq (pairs environment)
   (if (null pairs)
       '(progn)
-      (let ((d (gensym "DUMMY-")))
-        `(let ((,d ,(first pairs)))
-           (trail #'(lambda () (setq ,(first pairs) ,d)))
+      (let ((old (gensym "OLD-")))
+        `(let ((,old ,(first pairs)))
+           (trail #'(lambda () (setq ,(first pairs) ,old)))
            ,@(if (null (rest (rest pairs)))
                  (list `(setq
                          ,(first pairs)
@@ -2819,13 +2819,13 @@ model cannot propagate through helper parameters."
                    (symbolp (second continuation)))
               (is-magic-continuation? continuation))
     (error "Please report this bug; This shouldn't happen (D)"))
-  (let ((dummy-argument (gensym "DUMMY-")))
+  (let ((ignored (gensym "IGNORED-")))
     ;; note: We could get rid of this bogosity by having two versions of each
     ;;       nondeterministic function, one which returned a value and one which
     ;;       didn't.
-    `#'(lambda (&rest ,dummy-argument)
+    `#'(lambda (&rest ,ignored)
          (declare (magic)
-                  (ignore ,dummy-argument))
+                  (ignore ,ignored))
          ,@(cond ((symbolp continuation) `((funcall ,continuation)))
                  ((symbolp (second continuation)) `((,(second continuation))))
                  ;; Peal off LAMBDA, arguments, and DECLARE.
@@ -2859,17 +2859,17 @@ model cannot propagate through helper parameters."
                                     value?
                                     environment)
   (let ((c (gensym "CONTINUATION-"))
-        (dummy-argument (gensym "DUMMY-"))
+        (test-value (gensym "TEST-"))
         (other-arguments (gensym "OTHER-")))
     (possibly-beta-reduce-funcall
      `#'(lambda (,c)
           (declare (magic))
           ,(cps-convert
             antecedent
-            `#'(lambda (&optional ,dummy-argument &rest ,other-arguments)
+            `#'(lambda (&optional ,test-value &rest ,other-arguments)
                  (declare (magic)
                           (ignore ,other-arguments))
-                 (if ,dummy-argument
+                 (if ,test-value
                      ,(cps-convert consequent c types value? environment)
                      ,(cps-convert alternate c types value? environment)))
             '()
@@ -2951,11 +2951,11 @@ flag and emit a regular cl function for det-only ones."
               (if (and (consp binding) (= (length binding) 2))
                   (second binding)
                   nil))
-             (dummy-argument (gensym "DUMMY-"))
+             (let-value (gensym "LET-VALUE-"))
              (other-arguments (gensym "OTHER-")))
         (cps-convert
          binding-form
-         `#'(lambda (&optional ,dummy-argument &rest ,other-arguments)
+         `#'(lambda (&optional ,let-value &rest ,other-arguments)
               (declare (magic)
                        (ignore ,other-arguments))
               ,(cps-convert-let (rest bindings)
@@ -2965,7 +2965,7 @@ flag and emit a regular cl function for det-only ones."
                                 types
                                 value?
                                 environment
-                                (cons (list binding-variable dummy-argument)
+                                (cons (list binding-variable let-value)
                                       new-bindings)))
          '()
          t
@@ -3029,29 +3029,29 @@ flag and emit a regular cl function for det-only ones."
            types
            `(apply ,function (append ,@(reverse arguments)))
            value?))
-      (let ((dummy-argument (gensym "DUMMY-")))
+      (let ((mv-list (gensym "MV-")))
         (cps-convert
          (first forms)
-         `#'(lambda (&rest ,dummy-argument)
+         `#'(lambda (&rest ,mv-list)
               (declare (magic))
               ,(cps-convert-multiple-value-call-internal
                 nondeterministic? function (rest forms) continuation types value?
-                environment (cons dummy-argument arguments)))
+                environment (cons mv-list arguments)))
          nil
          t
          environment))))
 
 (defun-compile-time cps-convert-multiple-value-call
     (nondeterministic? function forms continuation types value? environment)
-  (let ((dummy-argument (gensym "DUMMY-"))
+  (let ((fn-value (gensym "FN-VALUE-"))
         (other-arguments (gensym "OTHER-")))
     (cps-convert
      function
-     `#'(lambda (&optional ,dummy-argument &rest ,other-arguments)
+     `#'(lambda (&optional ,fn-value &rest ,other-arguments)
           (declare (magic)
                    (ignore ,other-arguments))
           ,(cps-convert-multiple-value-call-internal
-            nondeterministic? dummy-argument forms continuation types value?
+            nondeterministic? fn-value forms continuation types value?
             environment))
      nil
      t
@@ -3060,17 +3060,17 @@ flag and emit a regular cl function for det-only ones."
 (defun-compile-time cps-convert-multiple-value-prog1
     (form forms continuation types value? environment)
   (if value?
-      (let ((dummy-argument (gensym "DUMMY-")))
+      (let ((mv-list (gensym "MV-")))
         (cps-convert
          form
-         `#'(lambda (&rest ,dummy-argument)
+         `#'(lambda (&rest ,mv-list)
               (declare (magic))
               ,(cps-convert-progn
                 forms
                 `#'(lambda ()
                      (declare (magic))
                      (possibly-beta-reduce-funcall
-                      continuation types `(values-list ,dummy-argument) t))
+                      continuation types `(values-list ,mv-list) t))
                 nil
                 nil
                 environment))
@@ -3106,12 +3106,12 @@ flag and emit a regular cl function for det-only ones."
         ;;       (SECOND TAG) is NIL since this arrises when you have a
         ;;       RETURN-FROM inside a FOR-EFFECTS to a tag outside the
         ;;       FOR-EFFECTS.
-        (let ((dummy-argument (gensym "DUMMY-")))
+        (let ((mv-list (gensym "MV-")))
           (cps-convert
            result
-           `#'(lambda (&rest ,dummy-argument)
+           `#'(lambda (&rest ,mv-list)
                 (declare (magic))
-                (return-from ,name (values-list ,dummy-argument)))
+                (return-from ,name (values-list ,mv-list)))
            '()
            t
            environment)))))
@@ -3120,23 +3120,23 @@ flag and emit a regular cl function for det-only ones."
     (arguments continuation types value? environment)
   (if (null arguments)
       (possibly-beta-reduce-funcall continuation types nil value?)
-      (let ((dummy-argument (gensym "DUMMY-"))
+      (let ((new (gensym "NEW-"))
             (other-arguments (gensym "OTHER-")))
         (cps-convert
          (second arguments)
-         `#'(lambda (&optional ,dummy-argument &rest ,other-arguments)
+         `#'(lambda (&optional ,new &rest ,other-arguments)
               (declare (magic)
                        (ignore ,other-arguments)
                        ,@(if (and (null (rest (rest arguments)))
                                   (not (null types)))
-                             `((type (and ,@types) ,dummy-argument))))
+                             `((type (and ,@types) ,new))))
               ,(if (null (rest (rest arguments)))
                    (possibly-beta-reduce-funcall
                     continuation
                     types
-                    `(setq ,(first arguments) ,dummy-argument)
+                    `(setq ,(first arguments) ,new)
                     value?)
-                   `(progn (setq ,(first arguments) ,dummy-argument)
+                   `(progn (setq ,(first arguments) ,new)
                            ,(cps-convert-setq
                              (rest (rest arguments))
                              continuation
@@ -3159,7 +3159,7 @@ flag and emit a regular cl function for det-only ones."
             (push (list c) segments))))
     (push nil (rest (first segments)))
     (let ((segments (reverse segments))
-          (dummy-argument (gensym "DUMMY-"))
+          (ignored (gensym "IGNORED-"))
           (other-arguments (gensym "OTHER-")))
       ;; Add DYNAMIC-EXTENT declarations for LABELS functions
       ;; This enables stack allocation instead of heap allocation for closures
@@ -3168,8 +3168,8 @@ flag and emit a regular cl function for det-only ones."
                    #'(lambda (segment)
                        (let ((next (rest (member segment segments :test #'eq))))
                          `(,(first segment)
-                            (&optional ,dummy-argument &rest ,other-arguments)
-                            (declare (ignore ,dummy-argument ,other-arguments))
+                            (&optional ,ignored &rest ,other-arguments)
+                            (declare (ignore ,ignored ,other-arguments))
                             ,(cps-convert-progn
                               (reverse (rest segment))
                               (if next `#',(first (first next)) continuation)
@@ -3193,29 +3193,29 @@ flag and emit a regular cl function for det-only ones."
     (arguments continuation types value? environment)
   (if (null arguments)
       (possibly-beta-reduce-funcall continuation types nil value?)
-      (let ((d (gensym "DUMMY-"))
-            (dummy-argument (gensym "DUMMY-"))
+      (let ((old (gensym "OLD-"))
+            (new (gensym "NEW-"))
             (other-arguments (gensym "OTHER-")))
         (cl:multiple-value-bind (vars vals stores store-form access-form)
             (get-setf-expansion (first arguments) environment)
           (cps-convert
            (second arguments)
-           `#'(lambda (&optional ,dummy-argument &rest ,other-arguments)
+           `#'(lambda (&optional ,new &rest ,other-arguments)
                 (declare (magic)
                          (ignore ,other-arguments)
                          ,@(if (and (null (rest (rest arguments)))
                                     (not (null types)))
-                               `((type (and ,@types) ,dummy-argument))))
-                (let* (,@(mapcar #'list vars vals) (,d ,access-form))
+                               `((type (and ,@types) ,new))))
+                (let* (,@(mapcar #'list vars vals) (,old ,access-form))
                   (unwind-protect
                        ,(if (null (rest (rest arguments)))
                             (possibly-beta-reduce-funcall
                              continuation
                              types
-                             (subst dummy-argument (first stores) store-form)
+                             (subst new (first stores) store-form)
                              value?)
                             `(progn ,(subst
-                                      dummy-argument
+                                      new
                                       (first stores)
                                       store-form)
                                     ,(cps-convert-local-setf/setq
@@ -3224,7 +3224,7 @@ flag and emit a regular cl function for det-only ones."
                                       types
                                       value?
                                       environment)))
-                    ,(subst d (first stores) store-form))))
+                    ,(subst old (first stores) store-form))))
            (if (null (rest (rest arguments))) types '())
            t
            environment)))))
@@ -3236,7 +3236,7 @@ flag and emit a regular cl function for det-only ones."
                                       value?
                                       environment
                                       &optional
-                                      dummy-arguments)
+                                      arg-vars)
   ;; needs work: TYPES is never actually used here.
   (if (null arguments)
       (let ((c (gensym "CONTINUATION-")))
@@ -3245,15 +3245,15 @@ flag and emit a regular cl function for det-only ones."
               (declare (magic))
               (,(cps-convert-function-name function-name)
                 ,c
-                ,@(reverse dummy-arguments)))
+                ,@(reverse arg-vars)))
          '()
          (if value? continuation (void-continuation continuation))
          t))
-      (let ((dummy-argument (gensym "DUMMY-"))
+      (let ((arg (gensym "ARG-"))
             (other-arguments (gensym "OTHER-")))
         (cps-convert
          (first arguments)
-         `#'(lambda (&optional ,dummy-argument &rest ,other-arguments)
+         `#'(lambda (&optional ,arg &rest ,other-arguments)
               (declare (magic)
                        (ignore ,other-arguments))
               ,(cps-convert-call
@@ -3263,7 +3263,7 @@ flag and emit a regular cl function for det-only ones."
                 types
                 value?
                 environment
-                (cons dummy-argument dummy-arguments)))
+                (cons arg arg-vars)))
          '()
          t
          environment))))
@@ -3275,20 +3275,20 @@ flag and emit a regular cl function for det-only ones."
                                           value?
                                           environment
                                           &optional
-                                          dummy-arguments)
+                                          arg-vars)
   (if (null arguments)
       (possibly-beta-reduce-funcall
        continuation
        types
        (if (not (null types))
-           `(the (and ,@types) (,function-name ,@(reverse dummy-arguments)))
-           `(,function-name ,@(reverse dummy-arguments)))
+           `(the (and ,@types) (,function-name ,@(reverse arg-vars)))
+           `(,function-name ,@(reverse arg-vars)))
        value?)
-      (let ((dummy-argument (gensym "DUMMY-"))
+      (let ((arg (gensym "ARG-"))
             (other-arguments (gensym "OTHER-")))
         (cps-convert
          (first arguments)
-         `#'(lambda (&optional ,dummy-argument &rest ,other-arguments)
+         `#'(lambda (&optional ,arg &rest ,other-arguments)
               (declare (magic)
                        (ignore ,other-arguments))
               ,(cps-non-convert-call
@@ -3298,7 +3298,7 @@ flag and emit a regular cl function for det-only ones."
                 types
                 value?
                 environment
-                (cons dummy-argument dummy-arguments)))
+                (cons arg arg-vars)))
          '()
          t
          environment))))
@@ -7702,17 +7702,8 @@ non-integer value.
 If it is not known whether or not X is integer valued when INTEGERPV is called
 then INTEGERPV creates and returns a new boolean variable V.
 
-The values of X and V are mutually constrained via noticers so that V is equal
-to T if and only if X is known to be integer valued, and V is equal to NIL if
-and only if X is known to be non-integer valued.
-
-If X later becomes known to be integer valued, a noticer attached to X
-restricts V to equal T. Likewise, if X later becomes known to be non-integer
-valued, a noticer attached to X restricts V to equal NIL.
-
-Furthermore, if V ever becomes known to equal T then a noticer attached to V
-restricts X to be integer valued. Likewise, if V ever becomes known to equal
-NIL then a noticer attached to V restricts X to be non-integer valued."
+The values of X and V are mutually constrained so that V equals T if and only
+if X is integer valued, and NIL if and only if X is non-integer valued."
   (cond ((known?-integerpv x) t)
         ((known?-notv-integerpv x) nil)
         (t (let ((x (variablize x))
@@ -7734,17 +7725,8 @@ NIL then a noticer attached to V restricts X to be non-integer valued."
   "Returns T if X is known to be rational valued, NIL if X is known to be non-rational,
 and otherwise returns a new boolean variable V.
 
-The values of X and V are mutually constrained via noticers so that V is equal
-to T if and only if X is known to be rational and V is equal to NIL if and only if
-X is known to be non-rational.
-
-If X later becomes known to be rational, a noticer attached to X restricts V to
-equal T. Likewise, if X later becomes known to be non-rational, a noticer attached
-to X restricts V to equal NIL.
-
-Furthermore, if V ever becomes known to equal T then a noticer attached to V
-restricts X to be rational valued. Likewise, if V ever becomes known to equal NIL
-then a noticer attached to V restricts X to be non-rational valued."
+The values of X and V are mutually constrained so that V equals T if and only
+if X is rational valued, and NIL if and only if X is non-rational valued."
   (cond ((known?-rationalpv x) t)
         ((known?-notv-rationalpv x) nil)
         (t (let ((x (variablize x))
@@ -7766,17 +7748,8 @@ then a noticer attached to V restricts X to be non-rational valued."
   "Returns T if X is known to be a ratio (noninteger rational), NIL if X is known to be not a ratio,
 and otherwise returns a new boolean variable V.
 
-The values of X and V are mutually constrained via noticers so that V is equal
-to T if and only if X is known to be a ratio and V is equal to NIL if and only if
-X is known not to be a ratio.
-
-If X later becomes known to be a ratio, a noticer attached to X restricts V to
-equal T. Likewise, if X later becomes known not to be a ratio, a noticer attached
-to X restricts V to equal NIL.
-
-Furthermore, if V ever becomes known to equal T then a noticer attached to V
-restricts X to be a ratio. Likewise, if V ever becomes known to equal NIL
-then a noticer attached to V restricts X to be not a ratio."
+The values of X and V are mutually constrained so that V equals T if and only
+if X is a ratio, and NIL if and only if X is not a ratio."
   (cond ((known?-ratiopv x) t)
         ((known?-notv-ratiopv x) nil)
         (t (let ((x (variablize x))
@@ -7800,17 +7773,8 @@ then a noticer attached to V restricts X to be not a ratio."
   "Returns T if X is known to be a float, NIL if X is known to be not a float,
 and otherwise returns a new boolean variable V.
 
-The values of X and V are mutually constrained via noticers so that V is equal
-to T if and only if X is known to be a ratio and V is equal to NIL if and only if
-X is known not to be a ratio.
-
-If X later becomes known to be a ratio, a noticer attached to X restricts V to
-equal T. Likewise, if X later becomes known not to be a ratio, a noticer attached
-to X restricts V to equal NIL.
-
-Furthermore, if V ever becomes known to equal T then a noticer attached to V
-restricts X to be a float. Likewise, if V ever becomes known to equal NIL
-then a noticer attached to V restricts X to be not a float."
+The values of X and V are mutually constrained so that V equals T if and only
+if X is a float, and NIL if and only if X is not a float."
   (cond ((known?-floatpv x) t)
         ((known?-notv-floatpv x) nil)
         (t (let ((x (variablize x))
@@ -7834,17 +7798,8 @@ then a noticer attached to V restricts X to be not a float."
   "Returns T if X is known to be real, NIL if X is known to be non-real,
 and otherwise returns a new boolean variable V.
 
-The values of X and V are mutually constrained via noticers so that V is equal
-to T if and only if X is known to be real and V is equal to NIL if and only if
-X is known to be non-real.
-
-* If X later becomes known to be real, a noticer attached to X restricts V to
-  equal T. Likewise, if X later becomes known to be non-real, a noticer
-  attached to X restricts V to equal NIL.
-
-* If V ever becomes known to equal T then a noticer attached to V restricts X
-  to be real. Likewise, if V ever becomes known to equal NIL then a noticer
-  attached to V restricts X to be non-real."
+The values of X and V are mutually constrained so that V equals T if and only
+if X is real, and NIL if and only if X is non-real."
   (cond ((known?-realpv x) t)
         ((known?-notv-realpv x) nil)
         (t (let ((x (variablize x))
@@ -7866,18 +7821,8 @@ X is known to be non-real.
   "Returns T if X is known to be numeric, NIL if X is known to be
 non-numeric, and otherwise returns a new boolean variable V.
 
-The values of X and V are mutually constrained via noticers so that V is equal
-to T if and only if X is known to be numeric and V is equal to NIL if and only
-if X is known to be non-numeric.
-
-* If X later becomes known to be numeric, a noticer attached to X restricts V
-  to equal T. Likewise, if X later becomes known to be non-numeric, a noticer
-  attached to X restricts V to equal NIL.
-
-* If V ever becomes known
-  to equal T then a noticer attached to V restricts X to be numeric. Likewise,
-  if V ever becomes known to equal NIL then a noticer attached to V restricts X
-  to be non-numeric."
+The values of X and V are mutually constrained so that V equals T if and only
+if X is numeric, and NIL if and only if X is non-numeric."
   (cond ((known?-numberpv x) t)
         ((known?-notv-numberpv x) nil)
         (t (let ((x (variablize x))
@@ -8045,17 +7990,8 @@ function EQL as a test function), NIL if X is known not to be a member of
 SEQUENCE, and otherwise returns a new boolean variable V.
 
 When a new variable is created, the values of X and V are mutually constrained
-via noticers so that V is equal to T if and only if X is known to be a member
-of SEQUENCE and V is equal to NIL if and only if X is known not to be a member
-of SEQUENCE.
-
-* If X later becomes known to be a member of SEQUENCE, a noticer attached to X
-  restricts v to equal T. Likewise, if X later becomes known not to be a
-  member of SEQUENCE, a noticer attached to X restricts V to equal NIL.
-
-* If V ever becomes known to equal T then a noticer attached to V restricts X
-  to be a member of SEQUENCE. Likewise, if V ever becomes known to equal NIL
-  then a noticer attached to V restricts X not to be a member of SEQUENCE.
+so that V equals T if and only if X is a member of SEQUENCE, and NIL if and
+only if X is not a member of SEQUENCE.
 
 The current implementation imposes two constraints on the parameter SEQUENCE.
 First, SEQUENCE must be bound when MEMBERV is called. Second, SEQUENCE must
@@ -8262,17 +8198,17 @@ and false if they are not."
 ;;; Lifted NOTV, ANDV and ORV
 
 (defun notv (x)
-  "Restricts X to be a boolean.
+  "Constrains X to be a boolean.
 
-Returns T if this restricts X to NIL, and T if this restricts X to NIL.
+Returns T if X is known to equal NIL, and NIL if X is known to equal T.
 
 Otherwise returns a new boolean variable V. V and X are mutually constrained
-via noticers, so that if either is later known to equal T, the other is
-restricted to equal NIL and vice versa.
+so that if either is later known to equal T, the other is constrained to
+equal NIL and vice versa.
 
 Note that unlike CL:NOT NOTV does not accept arbitrary values as arguments: it
-fails if its argument is not T, NIL, or variable that can be restricted to a
-boolean."
+fails if its argument is not T, NIL, or a variable that can be constrained to
+a boolean."
   (assert!-booleanpv x)
   (let ((x (value-of x)))
     (cond ((eq x t) nil)
@@ -8327,11 +8263,11 @@ boolean."
                  z)))))))
 
 (defun andv (&rest xs)
-  "Restricts each argument to be boolean.
+  "Constrains each argument to be boolean.
 
 Returns T if called with no arguments, or if all arguments are known to equal
-T after being restricted to be boolean, and returns NIL if any argument is
-known to equal NIL after this restriction.
+T after being constrained to be boolean, and returns NIL if any argument is
+known to equal NIL after this constraint.
 
 Otherwise returns a boolean variable V. The values of the arguments and V are
 mutually constrained:
@@ -8408,11 +8344,11 @@ arguments. Secondly, any non-boolean argument causes it to fail."
                  z)))))))
 
 (defun orv (&rest xs)
-  "Restricts each argument to be boolean.
+  "Constrains each argument to be boolean.
 
 Returns NIL if called with no arguments, or if all arguments are known to
-equal NIL after being restructed to be boolean, and returns T if any argument
-is known to equal T after this restriction.
+equal NIL after being constrained to be boolean, and returns T if any argument
+is known to equal T after this constraint.
 
 Otherwise returns a boolean variable V. The values of arguments and V are
 mutually constrained:
@@ -8609,8 +8545,8 @@ functions."
 its value.
 
 If X is an unbound variable then it must be known to have a countable set of
-potential values. In this case X is nondeterministically restricted to be
-equal to one of the values in this countable set, thus forcing X to be bound.
+potential values. In this case X is nondeterministically constrained to equal
+one of the values in this countable set, thus forcing X to be bound.
 The dereferenced value of X is then returned.
 
 An unbound variable is known to have a countable set of potential values
@@ -8694,9 +8630,9 @@ in the process of determining a good search order."
   "Returns X if it is not a variable. If X is a bound variable then returns
   its value.
 
-  If X is an unbound variable then it must be known to have a countable set of 
+  If X is an unbound variable then it must be known to have a countable set of
   potential values and a finite range. In this case, X is nondeterministically
-  restricted to be equal to a value in a random permutation of this countable
+  constrained to equal a value in a random permutation of this countable
   set, thus forcing X to be bound. The dereferenced value of X is then returned.
 
   An unbound variable is known to have a countable set of potential values
@@ -9130,20 +9066,11 @@ Y, NIL if the aggregate object X is known not to equal the aggregate object Y,
 and a new boolean variable V if it is not known whether or not X equals Y when
 EQUALV is called.
 
-The values of X, Y and V are mutually constraints via noticers so that V
-equals T if and only if X is known to equal Y and V equals NIL if and only if
-X is known not to equal Y.
+The values of X, Y and V are mutually constrained so that V equals T if and
+only if X equals Y, and NIL if and only if X does not equal Y.
 
-Noticers are attached to V as well as to all variables nested in both in X and
-Y. When the noticers attached to variables nested in X and Y detect that X is
-known to equal Y they restrict V to equal T. Likewise, when the noticers
-attached to variables nested in X and Y detect that X is known not to equal Y
-they restrict V to equal NIL.
-
-Furthermore, if V later becomes known to equal T then X and Y are unified.
-Likewise, if V later becomes known to equal NIL then X and Y are restricted to
-not be equal. This is accomplished by attaching noticers to the variables
-nested in X and Y which detect when X becomes equal to Y and fail.
+If V later becomes known to equal T then X and Y are unified. If V later
+becomes known to equal NIL then X and Y are constrained to not be equal.
 
 The expression \(KNOWN? (EQUALV X Y)) is analogous to the extra-logical predicate
 `==' typically available in Prolog.
@@ -9477,8 +9404,8 @@ variable V, mutually constrained with the arguments:
 arguments are numerically equal, and constrained to be NIL if two or more of
 the arguments numerically differ.
 
-This function takes one or more arguments. All of the arguments are restricted
-to be numeric.
+This function takes one or more arguments. All of the arguments are
+constrained to be numeric.
 
 Returns T when called with one argument. A call such as \(=V X1 X2 ... Xn)
 with more than two arguments behaves like a conjunction of two argument calls:
@@ -9487,8 +9414,8 @@ with more than two arguments behaves like a conjunction of two argument calls:
 
 When called with two arguments, returns T if X1 is known to be equal to X2 at
 the time of call, NIL if X1 is known not to be equal to X2 at the time of
-call, and a new boolean variable V if is not known if the two values are
-equal.
+call, and a new boolean variable V if it is not known whether the two values
+are equal.
 
 Two numeric values are known to be equal only when they are both bound and
 equal according to the Common Lisp function =.
@@ -9499,33 +9426,10 @@ disjoint, i.e. the upper bound of one is greater than the lower bound of the
 other.
 
 When a new variable is created, the values of X1, X2, and V are mutually
-constrained via noticers so that V is equal to T if and only if X1 is known to
-be equal to X2, and V is equal to NIL if and only if X1 is known not to be
-equal to X2.
-
-* If it later becomes known that X1 is equal to X2 noticers attached to X1 and
-  X2 restrict V to equal T. Likewise if it later becomes known that X1 is not
-  equal to X2 noticers attached to X1 and X2 restrict V to equal NIL.
-
-* If V ever becomes known to equal T then a noticer attached to V restricts X1
-  to be equal to X2. Likewise if V ever becomes known to equal NIL then a
-  noticer attached to V restricts X1 not to be equal to X2.
-
-* If X1 is known to be real then the noticer attached to X2 continually
-  restrict the upper bound of X1 to be no higher than the upper bound of X2
-  and the lower bound of X1 to be no lower than the lower bound of X2.
-  Likewise for bounds of X1 if X2 is known to be real.
-
-Restricting two values x1 and x2 to be equal is performed by attaching
-noticers to x1 and x2. These noticers continually restrict the domains of x1
-and x2 to be equivalent sets (using the Common Lisp function = as a test
-function) as their domains are restricted.
-
-Restricting two values X1 and X2 to not be equal is also performed by
-attaching noticers to X1 and X2. These noticers however do not restrict the
-domains or ranges of X1 or X2. They simply monitor their continually
-restrictions and fail when any assertion causes X1 to be known to be equal to
-X2."
+constrained so that V equals T if and only if X1 is equal to X2, and NIL if
+and only if X1 is not equal to X2. If V is later constrained to T, X1 and X2
+are unified; if V is constrained to NIL, X1 and X2 are constrained to differ
+and the constraint fails as soon as X1 and X2 become known to be equal."
   (=v-internal x xs))
 
 (defun <v-internal (x xs)
@@ -9538,8 +9442,8 @@ X2."
 less than the following argument Xi+1 and constrained to be NIL if some
 argument Xi is greater than or equal to the following argument Xi+1.
 
-This function takes one or more arguments. All of the arguments are restricted
-to be real.
+This function takes one or more arguments. All of the arguments are
+constrained to be real.
 
 Returns T when called with one argument. A call such as \(<V X1 X2 ... Xn)
 with more than two arguments behaves like a conjunction of two argument calls:
@@ -9558,31 +9462,10 @@ A real value X1 is known to be greater than or equal to a real value X2 if X1
 has a lower bound, X2 has an upper bound and the lower bound of X1 is greater
 than or equal to the upper bound of X2.
 
-When a new variable is created, the values of X1, X2 and v are mutually
-constrained via noticers so that V is equal to T if and only if X1 is known to
-be less than X2 and V is equal to NIL if and only if X1 is known to be greater
-than or equal to X2.
-
-* If it later becomes known that X1 is less than X2, noticers attached to X1
-  and X2 restrict V to equal T. Likewise, if it later becomes known that X1 is
-  greater than or equal to X2, noticers attached to X1 and X2 restrict V to
-  equal NIL.
-
-* If V ever becomes known to equal T then a noticer attached to V restricts X1
-  to be less than X2. Likewise, if V ever becomes known to equal NIL then a
-  noticer attached to V restricts X1 to be greater than or equal to X2.
-
-Restricting a real value X1 to be less than a real value X2 is performed by
-attaching noticers to X1 and X2. The noticer attached to X1 continually
-restricts the lower bound of X2 to be no lower than the upper bound of X1 if
-X1 has an upper bound. The noticer attached to X2 continually restricts the
-upper bound of X1 to be no higher than the lower bound of X2 if X2 has a lower
-bound. Since these restrictions only guarantee that X1 be less than or equal
-to X2, the constraint that X1 be strictly less than X2 is enforced by having
-the noticers fail when both X1 and X2 become known to be equal.
-
-Restricting a real value X1 to be greater than or equal to a real value X2 is
-performed by an analogous set of noticers without this last equality check."
+When a new variable is created, the values of X1, X2 and V are mutually
+constrained so that V equals T if and only if X1 is less than X2, and NIL if
+and only if X1 is greater than or equal to X2. The bounds of X1 and X2 are
+continually tightened to enforce this strict inequality."
   (<v-internal x xs))
 
 (defun <=v-internal (x xs)
@@ -9678,8 +9561,8 @@ Values of V, X1, and X2 are mutually constrained:
 are numerically equal, and constrained to be NIL if any two or more arguments
 are numerically equal.
 
-This function takes one or more arguments. All of the arguments are restricted
-to be numeric.
+This function takes one or more arguments. All of the arguments are
+constrained to be numeric.
 
 Returns T when called with one argument. A call such as \(/=V X1 X2 ... Xn)
 with more than two arguments behaves like a conjunction of two argument calls:
@@ -9704,32 +9587,9 @@ Two numeric values are known to be equal only when they are both bound and
 equal according to the Common Lisp function =.
 
 When a new variable is created, the values of X1, X2 and V are mutually
-constrained via noticers so that V is equal to T if and only if X1 is known
-not to be equal to X2 and V is equal to NIL if and only if X1 is known to be
-equal to X2.
-
-* If it later becomes known that X1 is not equal to X2, noticers attached to
-  X1 and X2 restrict V to equal T. Likewise, if it later becomes known that X1
-  is equal to X2, noticers attached to X1 and X2 restrict V to equal NIL.
-
-* If V ever becomes known to equal T then a noticer attached to V restricts X1
-  to not be equal to X2. Likewise, if V ever becomes known to equal NIL then a
-  noticer attached to V restricts X1 to be equal to X2.
-
-Restricting two values X1 and X2 to be equal is performed by attaching
-noticers to X1 and X2. These noticers continually restrict the domains of X1
-and X2 to be equivalent sets \(using the Common Lisp function = as a test
-function) as their domains are restricted. Furthermore, if X1 is known to be
-real then the noticer attached to X2 continually restrict the upper bound of
-X1 to be no higher than the upper bound of X2 and the lower bound of X1 to be
-no lower than the lower bound of X2. The noticer of X2 performs a symmetric
-restriction on the bounds of X1 if it is known to be real.
-
-Restricting two values X1 and X2 to not be equal is also performed by
-attaching noticers to X1 and X2. These noticers however, do not restrict the
-domains or ranges of X1 or X2. They simply monitor their continually
-restrictions and fail when any assertion causes X1 to be known to be equal to
-X2."
+constrained so that V equals T if and only if X1 is not equal to X2, and NIL
+if and only if X1 is equal to X2. If V is later constrained to T, X1 and X2
+are constrained to differ; if V is constrained to NIL, X1 and X2 are unified."
   (/=v-internal x xs))
 
 
@@ -9803,17 +9663,16 @@ X2."
 
 
 (defmacro-compile-time known? (x)
-  "Restricts X to be a boolean. If X is equal to T after being restricted to
+  "Constrains X to be a boolean. If X is equal to T after being constrained to
 be boolean, returns T. If X is equal to NIL or if the value of X is unknown
 returns NIL. The argument X can be either a variable or a non-variable.
 
-The initial restriction to boolean may cause other assertions to be made due
-to noticers attached to X. A call to KNOWN? fails if X is known not to be
-boolean prior to the assertion or if any of the assertions performed by the
-noticers result in failure.
+The initial constraint to boolean may cause other assertions to be made via
+the constraint network. A call to KNOWN? fails if X is known not to be
+boolean prior to the assertion or if any of the resulting assertions fail.
 
-Restricting X to be boolean attaches a noticer on X so that any subsequent
-assertion which restricts X to be non-boolean will fail.
+Constraining X to be boolean ensures any subsequent assertion that constrains
+X to be non-boolean will fail.
 
 Except for the fact that one cannot write #'KNOWN?, KNOWN? behaves like a
 function, even though it is implemented as a macro.
@@ -9905,14 +9764,14 @@ nested in a call to KNOWN?, are similarly transformed."
       (if polarity? `(assert!-true ,form) `(assert!-false ,form))))
 
 (defmacro-compile-time assert! (x)
-  "Restricts X to T. No meaningful result is returned. The argument X can be
+  "Constrains X to T. No meaningful result is returned. The argument X can be
 either a variable or a non-variable.
 
-This assertion may cause other assertions to be made due to noticers attached
-to X.
+This assertion may cause other assertions to be made via the constraint
+network propagating from X.
 
 A call to ASSERT! fails if X is known not to equal T prior to the assertion or
-if any of the assertions performed by the noticers result in failure.
+if any of the resulting assertions fail.
 
 Except for the fact that one cannot write #'ASSERT!, ASSERT! behaves like a
 function, even though it is implemented as a macro.
@@ -10054,19 +9913,19 @@ directly nested in a call to ASSERT!, are similarly transformed."
 
 
 (defmacro-compile-time decide (x)
-  "Restricts X to a be boolean. After X is restricted a nondeterministic
-choice is made. For one branch, X is restricted to equal T and \(DECIDE X)
-returns T as a result. For the other branch, X is restricted to equal NIL and
-\(DECIDE X) returns NIL as a result. The argument X can be either a variable
-or a non-variable.
+  "Constrains X to be a boolean. After X is constrained a nondeterministic
+choice is made. For one branch, X is constrained to equal T and \(DECIDE X)
+returns T as a result. For the other branch, X is constrained to equal NIL
+and \(DECIDE X) returns NIL as a result. The argument X can be either a
+variable or a non-variable.
 
-The initial restriction to boolean may cause other assertions to be made due
-to noticers attached to X. A call to DECIDE immediately fails if X is known
-not to be boolean prior to the assertion or if any of the assertions performed
-by the noticers result in failure.
+The initial constraint to boolean may cause other assertions to be made via
+the constraint network propagating from X. A call to DECIDE immediately fails
+if X is known not to be boolean prior to the assertion or if any of the
+resulting assertions fail.
 
-Restricting X to be boolean attaches a noticer on X so that any subsequent
-assertion which restricts X to be non-boolean will fail.
+Constraining X to be boolean ensures any subsequent assertion that constrains
+X to be non-boolean will fail.
 
 Except for implementation optimizations \(DECIDE X) is equivalent to:
 
@@ -10297,7 +10156,7 @@ VALUES can be either a vector or a list designator."
     (assert! (memberv v (alexandria::shuffle (copy-list values))))
     (value-of v)))
 
-(defmacro-compile-time n-variables (n var-fn &rest args)
+(defmacro n-variables (n var-fn &rest args)
   "Generate N variables using VAR-FN and ARGS.
   Ex.: (n-variables 3 'an-integer-betweenv 0 10)."
   (let ((variables (gensym "VARIABLES")))
@@ -10306,7 +10165,7 @@ VALUES can be either a vector or a list designator."
       (push (apply ,var-fn (list ,@args)) ,variables))
       ,variables)))
 
-(defmacro-compile-time n-lists-of-variables (sizes var-fn &rest args)
+(defmacro n-lists-of-variables (sizes var-fn &rest args)
   "Generate lists of variables. SIZES is a list, each element is the number of variables in that list.
 VAR-FN and ARGS are used to construct each variable.
   Ex.: (n-lists-of-variables '(2 3) 'an-integer-betweenv 0 10)."
@@ -10349,19 +10208,18 @@ divide-and-conquer search algorithm. There are always two alternatives, the
 second of which is tried upon backtracking.
 
 If it is known to have a finite domain D then this domain is split into two
-halves and the value of X is nondeterministically restricted to be a member
-one of the halves. If X becomes bound by this restriction then its value is
+halves and the value of X is nondeterministically constrained to be a member
+of one of the halves. If X becomes bound by this constraint then its value is
 returned. Otherwise, X itself is returned.
 
 If X is not known to have a finite domain but is known to be real and to have
 both lower and upper bounds then nondeterministically either the lower or
-upper bound is restricted to the midpoint between the lower and upper bound.
-If X becomes bound by this restriction then its dereferenced value is
+upper bound is tightened to the midpoint between the lower and upper bound.
+If X becomes bound by this constraint then its dereferenced value is
 returned. Otherwise, X itself is returned.
 
-An error is signalled if X is not known to be restricted to a finite domain
-and either is not known to be real or is not known to have both a lower and
-upper bound.
+An error is signalled if X is not known to have a finite domain and either is
+not known to be real or is not known to have both a lower and upper bound.
 
 When the set of potential values may be infinite, users of
 DIVIDE-AND-CONQUER-FORCE may need to take care to fail when the range size of
