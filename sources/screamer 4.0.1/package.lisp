@@ -41,9 +41,6 @@
            #:ith-value
            #:n-values
            #:print-values
-           #:nested-for-effects
-           #:nested-one-value
-           #:nested-all-values
            #:nondeterministic-function?
            #:funcall-nondeterministic
            #:apply-nondeterministic
@@ -52,6 +49,7 @@
            #:lambda-nondeterministic
            #:unwind-trail
            #:trail
+           #:with-trail
            #:purge
            #:unwedge-screamer
            #:local-output
@@ -157,6 +155,3 @@
            #:*strategy*
            #:*maximum-random-domain-size*))
 
-(in-package :screamer)
-;;; Avoid warnings when compiling screamer.lisp in LispWorks
-#+lispworks(declaim (declaration magic))
